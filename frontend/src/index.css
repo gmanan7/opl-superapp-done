@@ -1,0 +1,24 @@
+@import "tailwindcss";
+/* Fulcrum Sans @font-face set (15 woff2 in public/fonts/) — single source in docs/design/ (D-018). */
+@import "../../docs/design/fonts.css";
+/* shadcn/ui CSS-variable bridge — single source in docs/design/ (D-018). */
+@import "../../docs/design/shadcn-bridge.css";
+/* Design tokens — v3-style config consumed verbatim via @config (D-019). */
+@config "../tailwind.config.js";
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans); /* Fulcrum Sans chain, defined in fonts.css */
+  -webkit-font-smoothing: antialiased;
+  /* background/color come from shadcn-bridge.css @layer base (tokens). */
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}

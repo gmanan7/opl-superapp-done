@@ -1,0 +1,6 @@
+{
+  "name": "TPM Fulcrum",
+  "description": "Total Productive Maintenance (TPM) operational portal for KPIs, OPLs, Kaizens, and MDM management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

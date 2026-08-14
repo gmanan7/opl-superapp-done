@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fulcrum — Design Foundations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Noto+Sans+Gujarati:wght@400;500;600;700&family=Noto+Sans+Tamil:wght@400;500;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     FULCRUM SANS — the unified multi-script family.
+     Browser selects the right Noto per codepoint via this stack.
+     ============================================================ */
+  :root{
+    --font-sans: "Noto Sans","Noto Sans Devanagari","Noto Sans Gujarati","Noto Sans Tamil",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono: "Noto Sans Mono",ui-monospace,"SF Mono",Menlo,monospace;
+
+    /* Surfaces (warm stone) */
+    --surface-base:#FAFAF9; --surface-raised:#FFFFFF; --surface-sunken:#F5F5F4;
+    --surface-hover:#F0EFEE; --surface-inverse:#1A1714; --surface-inverse-hover:#292420;
+    /* Ink */
+    --ink-strong:#1C1917; --ink:#292524; --ink-muted:#57534E; --ink-subtle:#A8A29E;
+    --ink-inverse:#FAFAF9; --ink-inverse-muted:#A8A29E;
+    /* Line */
+    --line:#E7E5E4; --line-strong:#D6D3D1; --line-subtle:#F0EFEE;
+    /* Accent — burnt amber */
+    --accent-subtle:#FEF3C7; --accent-bright:#D97706; --accent:#B45309;
+    --accent-strong:#92400E; --accent-ring:rgba(180,83,9,.35); --accent-on:#FFFFFF;
+    /* Status */
+    --info-fg:#1D4ED8; --info-bg:#EFF6FF; --info-bd:#BFDBFE;
+    --success-fg:#047857; --success-bg:#ECFDF5; --success-bd:#A7F3D0;
+    --warning-fg:#A16207; --warning-bg:#FEFCE8; --warning-bd:#FDE68A;
+    --danger-fg:#B91C1C; --danger-bg:#FEF2F2; --danger-bd:#FECACA;
+    --neutral-fg:#57534E; --neutral-bg:#F5F5F4; --neutral-bd:#E7E5E4;
+    /* Shadows */
+    --shadow-sm:0 1px 3px rgba(28,25,23,.08),0 1px 2px rgba(28,25,23,.06);
+    --shadow-md:0 4px 12px rgba(28,25,23,.08),0 2px 4px rgba(28,25,23,.06);
+    --shadow-lg:0 12px 28px rgba(28,25,23,.12),0 4px 8px rgba(28,25,23,.06);
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:var(--font-sans);background:var(--surface-base);color:var(--ink);
+    font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;
+    font-feature-settings:"lnum" 1;font-variant-numeric:lining-nums;
+  }
+  ::selection{background:var(--accent-subtle);color:var(--accent-strong)}
+
+  /* ---------- Layout shell ---------- */
+  .app{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+  /* Sidebar — the doc eats its own dogfood: dark warm sidebar, amber active */
+  .nav{
+    position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    background:var(--surface-inverse);color:var(--ink-inverse);
+    padding:28px 18px;display:flex;flex-direction:column;gap:4px;
+  }
+  .nav .brand{padding:4px 10px 22px;border-bottom:1px solid rgba(255,255,255,.08);margin-bottom:14px}
+  .nav .brand .mark{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.01em;font-size:17px}
+  .nav .brand .dot{width:22px;height:22px;border-radius:7px;background:var(--accent-bright);
+    display:grid;place-items:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.15)}
+  .nav .brand .dot::after{content:"";width:8px;height:8px;background:#1A1714;border-radius:2px;transform:rotate(45deg)}
+  .nav .brand .sub{color:var(--ink-inverse-muted);font-size:12px;margin-top:6px;padding-left:1px}
+  .nav .grp{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:#78716C;
+    padding:16px 10px 6px;font-weight:600}
+  .nav a{
+    display:flex;align-items:center;gap:11px;color:#D6D3D1;text-decoration:none;
+    padding:9px 11px;border-radius:8px;font-size:14px;font-weight:500;
+    transition:background .12s ease,color .12s ease;border-left:2px solid transparent;
+  }
+  .nav a:hover{background:var(--surface-inverse-hover);color:#fff}
+  .nav a.active{background:var(--surface-inverse-hover);color:#fff;border-left-color:var(--accent-bright)}
+  .nav a .ix{width:18px;color:#78716C;font-variant-numeric:tabular-nums;font-size:12px;font-family:var(--font-mono)}
+  .nav a.active .ix{color:var(--accent-bright)}
+  .nav .langbar{margin-top:auto;padding:16px 10px 4px;border-top:1px solid rgba(255,255,255,.08);
+    font-size:13px;color:#A8A29E;display:flex;flex-wrap:wrap;gap:4px 8px;line-height:1.7}
+  .nav .langbar b{color:#fff;font-weight:600}
+
+  /* ---------- Content ---------- */
+  main{max-width:920px;width:100%;margin:0 auto;padding:0 56px}
+  section{padding:84px 0;border-bottom:1px solid var(--line)}
+  section:last-child{border-bottom:none}
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;
+    letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}
+  .kicker .num{font-family:var(--font-mono);background:var(--accent-subtle);color:var(--accent-strong);
+    padding:2px 7px;border-radius:5px;font-size:11px}
+  h1{font-size:56px;line-height:1.04;letter-spacing:-.025em;color:var(--ink-strong);font-weight:700}
+  h2{font-size:34px;line-height:1.12;letter-spacing:-.02em;color:var(--ink-strong);font-weight:700;margin-bottom:18px}
+  h3{font-size:20px;line-height:1.3;letter-spacing:-.01em;color:var(--ink-strong);font-weight:600;margin:34px 0 12px}
+  h4{font-size:14px;font-weight:600;color:var(--ink-strong);margin-bottom:10px}
+  p{max-width:64ch;color:var(--ink);text-wrap:pretty}
+  p+p{margin-top:14px}
+  .lead{font-size:20px;line-height:1.55;color:var(--ink-muted);max-width:60ch}
+  a.ln{color:var(--accent);text-decoration:none;border-bottom:1px solid var(--accent-ring)}
+  strong{font-weight:600;color:var(--ink-strong)}
+  em{font-style:normal;background:var(--accent-subtle);color:var(--accent-strong);padding:1px 5px;border-radius:4px;font-weight:500}
+  code{font-family:var(--font-mono);font-size:.88em;background:var(--surface-sunken);
+    padding:2px 6px;border-radius:5px;color:var(--ink-strong);border:1px solid var(--line)}
+
+  /* Cover */
+  .cover{padding:92px 0 76px}
+  .cover .eyebrow{font-family:var(--font-mono);font-size:13px;color:var(--ink-muted);
+    letter-spacing:.02em;margin-bottom:26px;display:flex;gap:14px;flex-wrap:wrap}
+  .cover .eyebrow span{display:inline-flex;align-items:center;gap:7px}
+  .cover .eyebrow .pip{width:7px;height:7px;border-radius:2px;background:var(--accent-bright)}
+  .cover .scripts{display:flex;gap:18px;flex-wrap:wrap;margin-top:34px;font-size:30px;color:var(--ink-subtle);font-weight:500}
+  .cover .scripts b{color:var(--ink-strong);font-weight:600}
+  .meta{display:flex;gap:38px;flex-wrap:wrap;margin-top:44px;padding-top:30px;border-top:1px solid var(--line)}
+  .meta div{font-size:13px}
+  .meta .k{color:var(--ink-subtle);font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+  .meta .v{color:var(--ink-strong);font-weight:500}
+
+  /* Feel: adjectives */
+  .adjs{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:30px 0 8px}
+  .adj{background:var(--surface-raised);border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:var(--shadow-sm)}
+  .adj .w{font-size:20px;font-weight:700;color:var(--ink-strong);letter-spacing:-.01em}
+  .adj .d{font-size:13.5px;color:var(--ink-muted);margin-top:6px;line-height:1.5}
+  .adj .x{font-size:12px;color:var(--ink-subtle);margin-top:10px}
+  .adj .x b{color:var(--accent);font-weight:600}
+
+  /* Laws */
+  .laws{display:flex;flex-direction:column;gap:2px;margin-top:26px;
+    border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface-raised)}
+  .law{display:grid;grid-template-columns:54px 1fr;gap:4px;padding:20px 22px;border-bottom:1px solid var(--line);align-items:start}
+  .law:last-child{border-bottom:none}
+  .law .n{font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--accent);padding-top:2px}
+  .law .t{font-weight:600;color:var(--ink-strong);font-size:16px;margin-bottom:4px}
+  .law .b{font-size:14.5px;color:var(--ink-muted);max-width:62ch;line-height:1.55}
+
+  /* Stays / changes table */
+  .evo{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:26px}
+  .evo .col{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface-raised)}
+  .evo .col h4{padding:14px 18px;margin:0;border-bottom:1px solid var(--line);font-size:13px;
+    text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
+  .evo .keep h4{color:var(--success-fg);background:var(--success-bg)}
+  .evo .change h4{color:var(--accent-strong);background:var(--accent-subtle)}
+  .evo .drop h4{color:var(--danger-fg);background:var(--danger-bg)}
+  .evo ul{list-style:none;padding:8px 0}
+  .evo li{padding:11px 18px;font-size:13.5px;color:var(--ink);border-bottom:1px solid var(--line-subtle);line-height:1.45}
+  .evo li:last-child{border-bottom:none}
+  .evo li b{color:var(--ink-strong);font-weight:600}
+  .evo li span{display:block;color:var(--ink-muted);font-size:12.5px;margin-top:3px}
+
+  /* Callout */
+  .callout{display:grid;grid-template-columns:auto 1fr;gap:14px;background:var(--surface-raised);
+    border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;
+    padding:18px 20px;margin:24px 0;box-shadow:var(--shadow-sm)}
+  .callout .ic{font-size:18px;line-height:1.4}
+  .callout p{font-size:14px;color:var(--ink-muted);margin:0;max-width:none}
+  .callout b{color:var(--ink-strong)}
+
+  /* ---------- Tokens: color ---------- */
+  .swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:20px}
+  .sw{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface-raised);box-shadow:var(--shadow-sm)}
+  .sw .chip{height:64px;border-bottom:1px solid rgba(0,0,0,.05)}
+  .sw .meta2{padding:10px 12px}
+  .sw .nm{font-size:12.5px;font-weight:600;color:var(--ink-strong)}
+  .sw .hx{font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);text-transform:uppercase;margin-top:2px}
+  .sw .use{font-size:11px;color:var(--ink-subtle);margin-top:5px;line-height:1.4}
+
+  /* Status row demo */
+  .statusrow{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+  .badge{display:inline-flex;align-items:center;gap:7px;padding:6px 12px 6px 10px;border-radius:8px;
+    font-size:13px;font-weight:600;border:1px solid}
+  .badge .sym{font-size:13px;width:16px;text-align:center}
+
+  /* Type scale */
+  .typescale{margin-top:22px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface-raised)}
+  .tr{display:grid;grid-template-columns:104px 1fr;gap:18px;align-items:baseline;padding:16px 20px;border-bottom:1px solid var(--line-subtle)}
+  .tr:last-child{border-bottom:none}
+  .tr .lbl{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-muted);padding-top:4px}
+  .tr .lbl b{display:block;color:var(--ink-strong);font-size:12px;margin-bottom:2px}
+  .tr .sample{color:var(--ink-strong);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* Token table */
+  table{width:100%;border-collapse:collapse;margin-top:18px;font-size:13.5px;
+    border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  thead{background:var(--surface-sunken)}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);
+    font-weight:600;padding:11px 16px}
+  td{padding:11px 16px;border-top:1px solid var(--line-subtle);color:var(--ink);vertical-align:middle}
+  td .token{font-family:var(--font-mono);font-size:12px;color:var(--accent-strong);font-weight:500}
+  td .val{font-family:var(--font-mono);font-size:12px;color:var(--ink-muted)}
+  .bar{height:14px;background:var(--accent);border-radius:3px;display:inline-block;vertical-align:middle}
+  .radiusbox{display:inline-block;width:40px;height:40px;background:var(--accent-subtle);border:1.5px solid var(--accent)}
+  .shadowbox{display:inline-block;width:72px;height:40px;background:#fff;border-radius:8px;border:1px solid var(--line-subtle)}
+
+  /* Font specimen */
+  .specimen{display:grid;grid-template-columns:120px 1fr;gap:0;border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;background:var(--surface-raised);margin-top:8px}
+  .specimen .scr{background:var(--surface-sunken);border-right:1px solid var(--line);
+    padding:18px 16px;display:flex;flex-direction:column;justify-content:center}
+  .specimen .scr .s1{font-weight:600;color:var(--ink-strong);font-size:14px}
+  .specimen .scr .s2{font-size:11.5px;color:var(--ink-muted);font-family:var(--font-mono);margin-top:4px}
+  .specimen .body{padding:18px 22px}
+  .specimen .head{font-size:30px;font-weight:600;color:var(--ink-strong);line-height:1.25;letter-spacing:-.01em}
+  .specimen .reg{font-size:16px;color:var(--ink);line-height:1.6;margin-top:8px}
+  .specimen .row+.row{border-top:1px solid var(--line-subtle);margin-top:14px;padding-top:14px}
+  .specgrid{display:flex;flex-direction:column;gap:14px;margin-top:22px}
+
+  .vs{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}
+  .vscard{border:1px solid var(--line);border-radius:12px;padding:20px;background:var(--surface-raised)}
+  .vscard .tag{font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);margin-bottom:12px}
+  .vscard .big{font-size:38px;line-height:1.1;color:var(--ink-strong);font-weight:600;letter-spacing:-.01em}
+  .vscard .note{font-size:12.5px;color:var(--ink-muted);margin-top:12px;line-height:1.5}
+
+  /* Code block */
+  .codewrap{margin-top:22px;border-radius:14px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--shadow-md)}
+  .codebar{display:flex;align-items:center;justify-content:space-between;background:#231F1C;
+    padding:11px 16px;color:#D6D3D1;font-size:12.5px;font-family:var(--font-mono)}
+  .codebar .fn{display:flex;align-items:center;gap:9px}
+  .codebar .fn .d{width:11px;height:11px;border-radius:3px;background:var(--accent-bright)}
+  .copy{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);color:#E7E5E4;
+    font-family:var(--font-mono);font-size:11.5px;padding:5px 11px;border-radius:7px;cursor:pointer;transition:background .12s}
+  .copy:hover{background:rgba(255,255,255,.14)}
+  pre{background:#1A1714;color:#E7E5E4;padding:22px 20px;overflow-x:auto;font-family:var(--font-mono);
+    font-size:12.5px;line-height:1.75;max-height:540px}
+  pre .c{color:#A8A29E;font-style:italic}
+  pre .k{color:#F0B27A}
+  pre .s{color:#A7C7A0}
+  pre .p{color:#C9B6E4}
+
+  /* misc */
+  .note-list{margin-top:18px;display:flex;flex-direction:column;gap:14px}
+  .ni{display:grid;grid-template-columns:30px 1fr;gap:12px;align-items:start}
+  .ni .b{width:24px;height:24px;border-radius:7px;background:var(--accent-subtle);color:var(--accent-strong);
+    display:grid;place-items:center;font-size:12px;font-weight:700;font-family:var(--font-mono);margin-top:2px}
+  .ni .t b{color:var(--ink-strong)}
+  .ni .t{font-size:14.5px;color:var(--ink-muted);line-height:1.55}
+
+  .tension{border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin-top:16px;background:var(--surface-raised);box-shadow:var(--shadow-sm)}
+  .tension .tt{font-size:16px;font-weight:600;color:var(--ink-strong);display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .tension .tt .vs2{font-family:var(--font-mono);font-size:11px;background:var(--warning-bg);color:var(--warning-fg);
+    border:1px solid var(--warning-bd);padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
+  .tension p{font-size:14px;margin:0;max-width:none}
+  .tension .res{margin-top:12px;padding-top:12px;border-top:1px solid var(--line-subtle);font-size:14px;color:var(--ink)}
+  .tension .res b{color:var(--success-fg)}
+
+  footer{padding:48px 0 80px;color:var(--ink-subtle);font-size:13px}
+
+  @media(max-width:1080px){
+    .app{grid-template-columns:1fr}
+    .nav{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center}
+    .nav .grp,.nav .langbar,.nav .brand .sub{display:none}
+    .nav .brand{border:none;margin:0;padding:4px 10px}
+    main{padding:0 28px}
+    .adjs,.evo{grid-template-columns:1fr 1fr}
+    .specimen{grid-template-columns:1fr}
+    .vs{grid-template-columns:1fr}
+  }
+  @media(max-width:640px){.adjs,.evo{grid-template-columns:1fr}h1{font-size:40px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar: the doc demonstrates the identity it specifies -->
+  <nav class="nav">
+    <div class="brand">
+      <div class="mark"><span class="dot"></span> Fulcrum</div>
+      <div class="sub">Design Foundations · v1</div>
+    </div>
+    <div class="grp">Phase 1–2</div>
+    <a href="#feel" class="active"><span class="ix">01</span> Feel statement</a>
+    <a href="#evolution"><span class="ix">02</span> Identity evolution</a>
+    <a href="#type"><span class="ix">03</span> Type &amp; fonts</a>
+    <a href="#color"><span class="ix">04</span> Color tokens</a>
+    <a href="#status"><span class="ix">05</span> Status system</a>
+    <a href="#scale"><span class="ix">06</span> Scale &amp; motion</a>
+    <a href="#config"><span class="ix">07</span> Tailwind config</a>
+    <a href="#questions"><span class="ix">08</span> Questions &amp; tensions</a>
+    <div class="langbar">
+      <b>English</b> · हिंदी · ગુજરાતી · தமிழ்
+    </div>
+  </nav>
+
+  <main>
+    <!-- COVER -->
+    <header class="cover">
+      <div class="eyebrow">
+        <span><span class="pip"></span> docs/design/FOUNDATIONS.md</span>
+        <span>Phase 1–2 deliverable</span>
+        <span>2026 rebuild</span>
+      </div>
+      <h1>The foundations a<br>hundred screens<br>will stand on.</h1>
+      <p class="lead">Three things, decided once and for all: how Fulcrum should <em>feel</em>, the exact tokens that encode it, and a font stack that renders Latin, Devanagari, Gujarati and Tamil as one voice — not four guests.</p>
+      <div class="scripts">
+        <b>Fulcrum</b> <span>फुलक्रम</span> <span>ફુલક્રમ</span> <span>ஃபல்க்ரம்</span>
+      </div>
+      <div class="meta">
+        <div><div class="k">For</div><div class="v">Claude Code (implements verbatim)</div></div>
+        <div><div class="k">Stack</div><div class="v">shadcn/ui · Tailwind · React</div></div>
+        <div><div class="k">Status</div><div class="v">Proposed — awaiting owner sign-off</div></div>
+        <div><div class="k">Scope</div><div class="v">Feel · Tokens · Fonts</div></div>
+      </div>
+    </header>
+
+    <!-- 01 FEEL -->
+    <section id="feel">
+      <div class="kicker"><span class="num">01</span> The feel statement</div>
+      <h2>A calm instrument for people<br>who have no time to spare.</h2>
+      <p class="lead">Fulcrum is held one-handed over a running machine, and it is also projected in a leadership review. The same surface has to feel <strong>quiet under pressure</strong> and <strong>trustworthy under scrutiny</strong>. That is the whole brief: an instrument, not a website.</p>
+
+      <p style="margin-top:22px">If you remember one thing, remember this: <strong>the task is the interface.</strong> An operator entering yesterday's production should never look at our design — they should look <em>through</em> it at the number they came to enter. Decoration that slows a capture by even a second is a defect, because the only competitor we have is paper, and paper is instant.</p>
+
+      <h3>Six adjectives — and what each forbids</h3>
+      <div class="adjs">
+        <div class="adj"><div class="w">Calm</div><div class="d">Warm-neutral surfaces, one accent, generous whitespace. The screen rests until you act.</div><div class="x"><b>Forbids:</b> gradient fills, decorative color, busy borders.</div></div>
+        <div class="adj"><div class="w">Direct</div><div class="d">The next action is obvious and within thumb's reach. One primary per screen.</div><div class="x"><b>Forbids:</b> two amber buttons competing on one view.</div></div>
+        <div class="adj"><div class="w">Legible</div><div class="d">Big where it's read in motion; dense only where it's studied at a desk.</div><div class="x"><b>Forbids:</b> body text below 14px, ever; capture text below 16px.</div></div>
+        <div class="adj"><div class="w">Equal</div><div class="d">Tamil looks as deliberate as English. No script is an afterthought.</div><div class="x"><b>Forbids:</b> a Latin-only display face; truncated translated labels.</div></div>
+        <div class="adj"><div class="w">Sturdy</div><div class="d">Sober weight, real contrast, factory-floor durable. It reads in glare and gloves.</div><div class="x"><b>Forbids:</b> thin hairline type, low-contrast grays as text.</div></div>
+        <div class="adj"><div class="w">Honest</div><div class="d">Skeletons not spinners; missing data is named, not hidden behind a blank chart.</div><div class="x"><b>Forbids:</b> layout shift on load; fake-empty states.</div></div>
+      </div>
+
+      <h3>The eight laws (pin these above every future screen)</h3>
+      <div class="laws">
+        <div class="law"><div class="n">L1</div><div><div class="t">Faster than paper, or it doesn't ship.</div><div class="b">Every capture flow is timed against the format it replaces. If it loses, it is redesigned — not decorated. This is law #1 because it is the product's survival condition.</div></div></div>
+        <div class="law"><div class="n">L2</div><div><div class="t">Amber is a scalpel, not a highlighter.</div><div class="b">The accent marks exactly one thing per view: the action you came to take. When everything is amber, nothing is. Surfaces stay warm-neutral; the accent earns attention by being rare.</div></div></div>
+        <div class="law"><div class="n">L3</div><div><div class="t">Every glyph is first-class.</div><div class="b">A screen in Tamil must look as composed as the same screen in English — same rhythm, same weight, no clipped matras, no overflowing buttons. We design to the longest language, never the shortest.</div></div></div>
+        <div class="law"><div class="n">L4</div><div><div class="t">Status is felt in three channels.</div><div class="b">Color + symbol + label, always together. A colour-blind leader on a glare-lit floor must read a state from its shape and its word alone.</div></div></div>
+        <div class="law"><div class="n">L5</div><div><div class="t">Big where the thumb lands.</div><div class="b">Capture targets are ≥44px and bottom-anchored for one-handed reach. Analysis surfaces may be dense — generosity and density are both correct, in their own place.</div></div></div>
+        <div class="law"><div class="n">L6</div><div><div class="t">Numbers hold still.</div><div class="b">KPI figures are tabular, lining, Latin-numeral, right-aligned. A form never reflows while a thumb is mid-entry; a chart never jumps when its data arrives.</div></div></div>
+        <div class="law"><div class="n">L7</div><div><div class="t">The original is never destroyed.</div><div class="b">Translation is a toggle laid over submitted content, not a replacement of it. A worker's Gujarati words are always one tap away, intact.</div></div></div>
+        <div class="law"><div class="n">L8</div><div><div class="t">Earn every pixel of chrome.</div><div class="b">If an element doesn't help capture or judgment, it's removed. No filler tiles, no vanity stats, no decoration masquerading as polish.</div></div></div>
+      </div>
+    </section>
+
+    <!-- 02 EVOLUTION -->
+    <section id="evolution">
+      <div class="kicker"><span class="num">02</span> How the identity evolves</div>
+      <h2>Keep the character.<br>Sharpen everything else.</h2>
+      <p class="lead">The prototype's instinct was right — warm, dark-sidebar, amber-accented, shadcn-based. It was just <strong>thin</strong>: no hierarchy of surface, an accent that doubles as a warning, a type stack that only truly serves 20% of users. We deepen it; we don't restart.</p>
+      <div class="evo">
+        <div class="col keep">
+          <h4>● Keep</h4>
+          <ul>
+            <li><b>Dark warm sidebar</b><span>The stone-900 rail is distinctive and orients leaders. Stays — retuned to #1A1714.</span></li>
+            <li><b>Warm accent</b><span>Amber is the brand's warmth. Stays as the single accent hue.</span></li>
+            <li><b>shadcn/ui + Tailwind</b><span>Delivery mechanism. Tokens map onto it; they never fight it.</span></li>
+            <li><b>Stone neutral family</b><span>Warm grays beat cool grays for a human, on-floor tool.</span></li>
+          </ul>
+        </div>
+        <div class="col change">
+          <h4>◑ Sharpen</h4>
+          <ul>
+            <li><b>Amber → burnt amber</b><span>#D97706 hot-orange deepens to #B45309 so white text passes AA. More confident, more accessible.</span></li>
+            <li><b>One surface → four</b><span>base / raised / sunken / inverse give real depth and rhythm instead of flat white-on-white.</span></li>
+            <li><b>Accent vs warning split</b><span>Brand = burnt-orange; warning = ochre #A16207. They stop colliding.</span></li>
+            <li><b>Status → 3-channel</b><span>Every state gets a symbol + label, not just a color.</span></li>
+          </ul>
+        </div>
+        <div class="col drop">
+          <h4>✕ Change out</h4>
+          <ul>
+            <li><b>DM Sans as the type voice</b><span>A Latin-only display face creates a two-tier identity. Replaced by one unified Noto family across all four scripts.</span></li>
+            <li><b>Color-only states</b><span>The red/blue/green/amber-by-hue approach fails the colour-blind floor test. Retired.</span></li>
+            <li><b>Flat elevation</b><span>Borderless white cards on white. Replaced by a warm-tinted shadow + line system.</span></li>
+            <li><b>Hot-orange CTA on white</b><span>Fails contrast at body size. Retired in favour of the deeper accent.</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout">
+        <div class="ic">🎯</div>
+        <p><b>The evolution in one line:</b> same warm, sober, amber-and-stone character the prototype reached for — now given a real surface hierarchy, an accessible accent, a colour-blind-safe status system, and a type stack that treats all four scripts as one voice.</p>
+      </div>
+    </section>
+
+    <!-- 03 TYPE & FONTS -->
+    <section id="type">
+      <div class="kicker"><span class="num">03</span> Type &amp; font implementation</div>
+      <h2>One family. Four scripts.<br>No second-class glyphs.</h2>
+      <p class="lead">The decision: <strong>pure Noto Sans across all four scripts</strong> — Noto Sans (Latin) + Noto Sans Devanagari + Gujarati + Tamil — bound into a single CSS family. We do <strong>not</strong> pair DM Sans for Latin. Here's the reasoning, shown not asserted.</p>
+
+      <h3>Why not DM Sans (Latin) + Noto (Indic)?</h3>
+      <p>The brief allows the pairing "if baseline/weight harmony is demonstrated." When you put them side by side, it isn't there. DM Sans is a geometric display face with a tall x-height and closed apertures; Noto's Indic faces are humanist, designed by the same team that drew Noto Sans Latin to <strong>share vertical metrics and weight axis</strong>. Pairing means a geometric Latin sitting next to a humanist Devanagari — two voices — and worse, it makes the <em>language you ship in</em> change the typeface you see. For an app whose 80% read Indic scripts, that is a two-tier identity by construction.</p>
+      <div class="vs">
+        <div class="vscard">
+          <div class="tag">✕ DM Sans (Latin) beside Noto (Devanagari)</div>
+          <div class="big" style="font-family:'DM Sans',sans-serif">Production 21</div>
+          <div class="big" style="font-family:'Noto Sans Devanagari'">उत्पादन २१</div>
+          <div class="note">Different x-heights, different stroke modulation, different "color" on the page. The seam shows the moment a screen switches language.</div>
+        </div>
+        <div class="vscard" style="border-color:var(--success-bd);background:var(--success-bg)">
+          <div class="tag" style="color:var(--success-fg)">✓ Noto Sans across both</div>
+          <div class="big" style="font-family:'Noto Sans'">Production 21</div>
+          <div class="big" style="font-family:'Noto Sans Devanagari'">उत्पादन 21</div>
+          <div class="note">Shared metrics, one weight system, identical numerals. The two scripts read as one typeface — because they are one type system.</div>
+        </div>
+      </div>
+      <div class="callout">
+        <div class="ic">💡</div>
+        <p><b>Distinctiveness doesn't come from the typeface.</b> It comes from the <em>system</em> — the burnt amber, the surface hierarchy, the scale rhythm, the dark rail. A display face that only works in one of four scripts is a liability we don't need to take on. Noto gives us unbreakable harmony; the brand gives us the character.</p>
+      </div>
+
+      <h3>Live specimen — heading &amp; body, all four scripts</h3>
+      <p>Rendered in the browser right now, from the same stack the app ships. Heading is 30px / 600; body is 16px / 400 at line-height 1.6.</p>
+      <div class="specgrid">
+        <div class="specimen">
+          <div class="scr"><div class="s1">Latin</div><div class="s2">Noto Sans</div></div>
+          <div class="body">
+            <div class="head" lang="en">Enter today's production</div>
+            <div class="reg" lang="en">Fulcrum runs your entire TPM operation in the language the operator actually thinks in — and the numbers stay Latin: 21,480 sheets.</div>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="scr"><div class="s1">Devanagari</div><div class="s2">हिंदी · Hindi</div></div>
+          <div class="body">
+            <div class="head" lang="hi">आज का उत्पादन दर्ज करें</div>
+            <div class="reg" lang="hi">फुलक्रम आपके पूरे टीपीएम संचालन को उसी भाषा में चलाता है जिसमें ऑपरेटर सोचता है — और संख्याएँ लैटिन रहती हैं: 21,480 शीट।</div>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="scr"><div class="s1">Gujarati</div><div class="s2">ગુજરાતી · Gujarati</div></div>
+          <div class="body">
+            <div class="head" lang="gu">આજનું ઉત્પાદન દાખલ કરો</div>
+            <div class="reg" lang="gu">ફુલક્રમ તમારા સમગ્ર ટીપીએમ સંચાલનને એ જ ભાષામાં ચલાવે છે જેમાં ઓપરેટર વિચારે છે — અને સંખ્યાઓ લૅટિન રહે છે: 21,480 શીટ.</div>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="scr"><div class="s1">Tamil</div><div class="s2">தமிழ் · Tamil</div></div>
+          <div class="body">
+            <div class="head" lang="ta">இன்றைய உற்பத்தியை உள்ளிடவும்</div>
+            <div class="reg" lang="ta">ஃபல்க்ரம் உங்கள் முழு டிபிஎம் செயல்பாட்டையும் ஆபரேட்டர் சிந்திக்கும் மொழியிலேயே இயக்குகிறது — எண்கள் லத்தீன் எழுத்தில் இருக்கும்: 21,480 தாள்கள்.</div>
+          </div>
+        </div>
+      </div>
+
+      <h3>Text expansion — designed to the longest language</h3>
+      <p>The same action label across all four scripts. Buttons size to content and wrap; they are never fixed-width and never truncate. Note how Tamil runs longest with no break points — the component must breathe, not clip.</p>
+      <div class="statusrow" style="margin-top:18px">
+        <span class="badge" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:12px 18px;font-size:15px;min-height:44px">Approve &amp; close</span>
+        <span class="badge" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:12px 18px;font-size:15px;min-height:44px" lang="hi">स्वीकृत करके बंद करें</span>
+        <span class="badge" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:12px 18px;font-size:15px;min-height:44px" lang="gu">મંજૂર કરીને બંધ કરો</span>
+        <span class="badge" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:12px 18px;font-size:15px;min-height:44px" lang="ta">ஒப்புதல் அளித்து மூடவும்</span>
+      </div>
+
+      <h3>Implementation spec — code-ready</h3>
+      <table>
+        <thead><tr><th style="width:32%">Decision</th><th>Specification</th></tr></thead>
+        <tbody>
+          <tr><td><b>Family</b></td><td>Noto Sans (Latin) · Noto Sans Devanagari · Noto Sans Gujarati · Noto Sans Tamil · Noto Sans Mono (data/code). Bound as one logical family, <code>Fulcrum Sans</code>.</td></tr>
+          <tr><td><b>Weights</b></td><td>400 Regular · 500 Medium · 600 Semibold · 700 Bold. Same four weights in every script (Noto Indic ships them). No 300/light — fails floor legibility.</td></tr>
+          <tr><td><b>Numerals</b></td><td>Latin / Western-Arabic everywhere (<code>21,480</code>, never <code>२१,४८०</code>). Enforce <code>font-variant-numeric: lining-nums tabular-nums</code> on all KPI &amp; table figures so columns align and don't reflow.</td></tr>
+          <tr><td><b>Subsets</b></td><td>Per script: <code>latin</code>, <code>latin-ext</code>, <code>devanagari</code>, <code>gujarati</code>, <code>tamil</code>. Self-host woff2, one file per script × weight. No CJK, no unused subsets.</td></tr>
+          <tr><td><b>Loading</b></td><td>Self-hosted woff2 with <code>font-display: swap</code>. <code>&lt;link rel="preload"&gt;</code> only Noto Sans 400 + 600 Latin and the <em>active</em> language's 400 + 600 (injected by locale). Lazy-load the rest.</td></tr>
+          <tr><td><b>Binding</b></td><td>One <code>@font-face</code> per script scoped by <code>unicode-range</code>, all named <code>"Fulcrum Sans"</code>. The browser picks the right script per codepoint automatically — app code only ever writes <code>font-family: "Fulcrum Sans"</code>.</td></tr>
+          <tr><td><b>Line-height</b></td><td>Body ≥ 1.6, headings ≥ 1.25. Indic stacking marks (Devanagari matras, Tamil/Gujarati loops) clip below 1.5 — the scale below bakes this in. Never set a fixed pixel line-height on multilingual text.</td></tr>
+          <tr><td><b>Fallback chain</b></td><td>Latin → <code>system-ui, -apple-system, "Segoe UI", Roboto</code>. Devanagari → <code>"Nirmala UI", sans-serif</code>. Gujarati → <code>"Nirmala UI", "Shruti"</code>. Tamil → <code>"Nirmala UI", "Latha"</code>. Each scoped in its own <code>@font-face</code> fallback so swap never shows tofu.</td></tr>
+        </tbody>
+      </table>
+      <div class="codewrap">
+        <div class="codebar"><span class="fn"><span class="d"></span> src/styles/fonts.css — the unified family (excerpt)</span><button class="copy" data-copy="fonts">Copy</button></div>
+        <pre id="code-fonts"><span class="c">/* One name, many scripts. Browser routes glyphs by unicode-range. */</span>
+<span class="k">@font-face</span> {
+  font-family: <span class="s">"Fulcrum Sans"</span>;
+  src: url(<span class="s">"/fonts/noto-sans-latin-400.woff2"</span>) format(<span class="s">"woff2"</span>);
+  font-weight: <span class="p">400</span>; font-display: <span class="p">swap</span>;
+  unicode-range: <span class="p">U+0000-00FF, U+0131, U+2000-206F, U+2212</span>;
+}
+<span class="k">@font-face</span> {
+  font-family: <span class="s">"Fulcrum Sans"</span>;
+  src: url(<span class="s">"/fonts/noto-sans-devanagari-400.woff2"</span>) format(<span class="s">"woff2"</span>);
+  font-weight: <span class="p">400</span>; font-display: <span class="p">swap</span>;
+  unicode-range: <span class="p">U+0900-097F, U+1CD0-1CFF, U+A8E0-A8FF</span>;
+}
+<span class="k">@font-face</span> {
+  font-family: <span class="s">"Fulcrum Sans"</span>;
+  src: url(<span class="s">"/fonts/noto-sans-gujarati-400.woff2"</span>) format(<span class="s">"woff2"</span>);
+  font-weight: <span class="p">400</span>; font-display: <span class="p">swap</span>;
+  unicode-range: <span class="p">U+0A80-0AFF</span>;
+}
+<span class="k">@font-face</span> {
+  font-family: <span class="s">"Fulcrum Sans"</span>;
+  src: url(<span class="s">"/fonts/noto-sans-tamil-400.woff2"</span>) format(<span class="s">"woff2"</span>);
+  font-weight: <span class="p">400</span>; font-display: <span class="p">swap</span>;
+  unicode-range: <span class="p">U+0B80-0BFF, U+200C-200D</span>;
+}
+<span class="c">/* …repeat each block for weights 500 / 600 / 700. */</span>
+<span class="c">/* App code never names a script — only: font-family: "Fulcrum Sans"; */</span></pre>
+      </div>
+    </section>
+
+    <!-- 04 COLOR -->
+    <section id="color">
+      <div class="kicker"><span class="num">04</span> Color tokens</div>
+      <h2>Warm-neutral surfaces,<br>one confident accent.</h2>
+      <p class="lead">Semantic, not literal — components reference <code>surface-raised</code> and <code>accent</code>, never <code>amber-700</code>. That's what lets a hundred screens stay coherent and a re-tune touch one file.</p>
+
+      <h3>Surfaces &amp; ink</h3>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#FAFAF9"></div><div class="meta2"><div class="nm">surface-base</div><div class="hx">#FAFAF9</div><div class="use">App background</div></div></div>
+        <div class="sw"><div class="chip" style="background:#FFFFFF"></div><div class="meta2"><div class="nm">surface-raised</div><div class="hx">#FFFFFF</div><div class="use">Cards, sheets, inputs</div></div></div>
+        <div class="sw"><div class="chip" style="background:#F5F5F4"></div><div class="meta2"><div class="nm">surface-sunken</div><div class="hx">#F5F5F4</div><div class="use">Table heads, insets</div></div></div>
+        <div class="sw"><div class="chip" style="background:#F0EFEE"></div><div class="meta2"><div class="nm">surface-hover</div><div class="hx">#F0EFEE</div><div class="use">Row / control hover</div></div></div>
+        <div class="sw"><div class="chip" style="background:#1A1714"></div><div class="meta2"><div class="nm">surface-inverse</div><div class="hx">#1A1714</div><div class="use">Sidebar, command bar</div></div></div>
+        <div class="sw"><div class="chip" style="background:#1C1917"></div><div class="meta2"><div class="nm">ink-strong</div><div class="hx">#1C1917</div><div class="use">Headings, KPI numbers</div></div></div>
+        <div class="sw"><div class="chip" style="background:#292524"></div><div class="meta2"><div class="nm">ink</div><div class="hx">#292524</div><div class="use">Body text · 13.6:1</div></div></div>
+        <div class="sw"><div class="chip" style="background:#57534E"></div><div class="meta2"><div class="nm">ink-muted</div><div class="hx">#57534E</div><div class="use">Secondary · 6.9:1</div></div></div>
+        <div class="sw"><div class="chip" style="background:#A8A29E"></div><div class="meta2"><div class="nm">ink-subtle</div><div class="hx">#A8A29E</div><div class="use">Placeholder / disabled</div></div></div>
+        <div class="sw"><div class="chip" style="background:#E7E5E4"></div><div class="meta2"><div class="nm">line</div><div class="hx">#E7E5E4</div><div class="use">Borders, dividers</div></div></div>
+      </div>
+
+      <h3>Accent — burnt amber</h3>
+      <p>Deepened from the prototype's hot orange so <strong>white text clears WCAG AA at body size</strong> (5.0:1 on <code>accent</code>). <code>accent-bright</code> is reserved for large fills and chart marks where AA-large (3:1) applies.</p>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#FEF3C7"></div><div class="meta2"><div class="nm">accent-subtle</div><div class="hx">#FEF3C7</div><div class="use">Tints, selected rows, focus halo</div></div></div>
+        <div class="sw"><div class="chip" style="background:#D97706"></div><div class="meta2"><div class="nm">accent-bright</div><div class="hx">#D97706</div><div class="use">Large fills, chart marks (AA-lg)</div></div></div>
+        <div class="sw"><div class="chip" style="background:#B45309"></div><div class="meta2"><div class="nm">accent · DEFAULT</div><div class="hx">#B45309</div><div class="use">Primary btn, links · white 5.0:1</div></div></div>
+        <div class="sw"><div class="chip" style="background:#92400E"></div><div class="meta2"><div class="nm">accent-strong</div><div class="hx">#92400E</div><div class="use">Hover / active / accent text</div></div></div>
+      </div>
+    </section>
+
+    <!-- 05 STATUS -->
+    <section id="status">
+      <div class="kicker"><span class="num">05</span> Status system</div>
+      <h2>Color + symbol + label.<br>Never color alone.</h2>
+      <p class="lead">A colour-blind reviewer under factory glare must decode a state from its <strong>shape</strong> and its <strong>word</strong>, not its hue. Every status token ships as a triple. Warning is ochre, deliberately split from the burnt-amber brand accent so the two never read as the same signal.</p>
+      <div class="statusrow">
+        <span class="badge" style="color:var(--info-fg);background:var(--info-bg);border-color:var(--info-bd)"><span class="sym">ⓘ</span> Info</span>
+        <span class="badge" style="color:var(--success-fg);background:var(--success-bg);border-color:var(--success-bd)"><span class="sym">✓</span> Approved</span>
+        <span class="badge" style="color:var(--warning-fg);background:var(--warning-bg);border-color:var(--warning-bd)"><span class="sym">▲</span> Pending</span>
+        <span class="badge" style="color:var(--danger-fg);background:var(--danger-bg);border-color:var(--danger-bd)"><span class="sym">✕</span> Overdue</span>
+        <span class="badge" style="color:var(--neutral-fg);background:var(--neutral-bg);border-color:var(--neutral-bd)"><span class="sym">●</span> Draft</span>
+      </div>
+      <table>
+        <thead><tr><th>Token</th><th>Symbol</th><th>Foreground</th><th>Background</th><th>Maps to</th></tr></thead>
+        <tbody>
+          <tr><td><span class="token">info</span></td><td>ⓘ</td><td><span class="val">#1D4ED8</span></td><td><span class="val">#EFF6FF</span></td><td>Hints, sync notices, translate active</td></tr>
+          <tr><td><span class="token">success</span></td><td>✓</td><td><span class="val">#047857</span></td><td><span class="val">#ECFDF5</span></td><td>Approved, closed, on-target, synced</td></tr>
+          <tr><td><span class="token">warning</span></td><td>▲</td><td><span class="val">#A16207</span></td><td><span class="val">#FEFCE8</span></td><td>Pending, retraining due, missing days</td></tr>
+          <tr><td><span class="token">danger</span></td><td>✕</td><td><span class="val">#B91C1C</span></td><td><span class="val">#FEF2F2</span></td><td>Overdue, rejected, off-target, sync fail</td></tr>
+          <tr><td><span class="token">neutral</span></td><td>●</td><td><span class="val">#57534E</span></td><td><span class="val">#F5F5F4</span></td><td>Draft, archived, inactive, deactivated</td></tr>
+        </tbody>
+      </table>
+      <div class="callout"><div class="ic">⚠️</div><p><b>Implementation rule for Claude Code:</b> a <code>&lt;StatusBadge&gt;</code> takes <code>status</code> + a translated <code>label</code> and <em>always</em> renders symbol + label together. There is no color-only variant in the API — it cannot be misused.</p></div>
+    </section>
+
+    <!-- 06 SCALE & MOTION -->
+    <section id="scale">
+      <div class="kicker"><span class="num">06</span> Type scale · spacing · radii · shadows · motion</div>
+      <h2>The measured system.</h2>
+
+      <h3>Type scale <span style="font-weight:400;color:var(--ink-subtle);font-size:14px">— root 16px, Indic-safe line-heights baked in</span></h3>
+      <div class="typescale">
+        <div class="tr"><div class="lbl"><b>data-lg</b>44 / 700</div><div class="sample" style="font-size:44px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums">21,480</div></div>
+        <div class="tr"><div class="lbl"><b>5xl</b>48 / 700</div><div class="sample" style="font-size:48px;font-weight:700;letter-spacing:-.025em">Display</div></div>
+        <div class="tr"><div class="lbl"><b>3xl</b>30 / 600</div><div class="sample" style="font-size:30px;font-weight:600;letter-spacing:-.015em">Section heading</div></div>
+        <div class="tr"><div class="lbl"><b>2xl</b>24 / 600</div><div class="sample" style="font-size:24px;font-weight:600">Card title · आज का उत्पादन</div></div>
+        <div class="tr"><div class="lbl"><b>xl</b>20 / 600</div><div class="sample" style="font-size:20px;font-weight:600">Subsection</div></div>
+        <div class="tr"><div class="lbl"><b>lg</b>18 / 500</div><div class="sample" style="font-size:18px;font-weight:500">Capture label · large input</div></div>
+        <div class="tr"><div class="lbl"><b>base</b>16 / 400</div><div class="sample" style="font-size:16px">Body &amp; capture minimum — இன்றைய உற்பத்தி</div></div>
+        <div class="tr"><div class="lbl"><b>sm</b>14 / 400</div><div class="sample" style="font-size:14px">Secondary, table cells (desktop)</div></div>
+        <div class="tr"><div class="lbl"><b>xs</b>12 / 500</div><div class="sample" style="font-size:12px;font-weight:500">Meta, kicker, timestamp</div></div>
+      </div>
+      <div class="callout"><div class="ic">📐</div><p><b>Floor rules:</b> capture surfaces never go below <code>base</code> (16px); leader/analysis surfaces never below <code>sm</code> (14px). <code>xs</code> is for Latin meta only — avoid it for Indic, where 12px clips matras.</p></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:36px">
+        <div>
+          <h3 style="margin-top:0">Spacing <span style="font-weight:400;color:var(--ink-subtle);font-size:14px">— 4px grid</span></h3>
+          <table style="margin-top:12px">
+            <tbody>
+              <tr><td><span class="token">1</span></td><td><span class="val">4px</span></td><td><span class="bar" style="width:4px"></span></td></tr>
+              <tr><td><span class="token">2</span></td><td><span class="val">8px</span></td><td><span class="bar" style="width:8px"></span></td></tr>
+              <tr><td><span class="token">3</span></td><td><span class="val">12px</span></td><td><span class="bar" style="width:12px"></span></td></tr>
+              <tr><td><span class="token">4</span></td><td><span class="val">16px</span></td><td><span class="bar" style="width:16px"></span></td></tr>
+              <tr><td><span class="token">6</span></td><td><span class="val">24px</span></td><td><span class="bar" style="width:24px"></span></td></tr>
+              <tr><td><span class="token">8</span></td><td><span class="val">32px</span></td><td><span class="bar" style="width:32px"></span></td></tr>
+              <tr><td><span class="token">touch</span></td><td><span class="val">44px</span></td><td><span class="bar" style="width:44px;background:var(--accent-bright)"></span></td></tr>
+              <tr><td><span class="token">touch-lg</span></td><td><span class="val">56px</span></td><td><span class="bar" style="width:56px;background:var(--accent-bright)"></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h3 style="margin-top:0">Radii</h3>
+          <table style="margin-top:12px">
+            <tbody>
+              <tr><td><span class="token">sm</span></td><td><span class="val">6px</span></td><td><span class="radiusbox" style="border-radius:6px"></span></td></tr>
+              <tr><td><span class="token">DEFAULT</span></td><td><span class="val">8px</span></td><td><span class="radiusbox" style="border-radius:8px"></span></td></tr>
+              <tr><td><span class="token">lg</span></td><td><span class="val">12px</span></td><td><span class="radiusbox" style="border-radius:12px"></span></td></tr>
+              <tr><td><span class="token">xl</span></td><td><span class="val">16px</span></td><td><span class="radiusbox" style="border-radius:16px"></span></td></tr>
+              <tr><td><span class="token">full</span></td><td><span class="val">9999</span></td><td><span class="radiusbox" style="border-radius:9999px"></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <h3>Elevation <span style="font-weight:400;color:var(--ink-subtle);font-size:14px">— warm-tinted, low &amp; calm</span></h3>
+      <div style="display:flex;gap:26px;flex-wrap:wrap;margin-top:18px;background:var(--surface-sunken);padding:30px;border-radius:14px;border:1px solid var(--line)">
+        <div style="text-align:center"><div class="shadowbox" style="box-shadow:0 1px 2px rgba(28,25,23,.06)"></div><div class="hx" style="font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);margin-top:10px">shadow-xs</div></div>
+        <div style="text-align:center"><div class="shadowbox" style="box-shadow:var(--shadow-sm)"></div><div class="hx" style="font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);margin-top:10px">shadow-sm · cards</div></div>
+        <div style="text-align:center"><div class="shadowbox" style="box-shadow:var(--shadow-md)"></div><div class="hx" style="font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);margin-top:10px">shadow-md · popovers</div></div>
+        <div style="text-align:center"><div class="shadowbox" style="box-shadow:var(--shadow-lg)"></div><div class="hx" style="font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);margin-top:10px">shadow-lg · modals</div></div>
+        <div style="text-align:center"><div class="shadowbox" style="box-shadow:0 0 0 3px var(--accent-ring)"></div><div class="hx" style="font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);margin-top:10px">focus ring</div></div>
+      </div>
+
+      <h3>Motion <span style="font-weight:400;color:var(--ink-subtle);font-size:14px">— fast enough to feel instant, gated on reduced-motion</span></h3>
+      <table>
+        <thead><tr><th>Token</th><th>Duration</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td><span class="token">instant</span></td><td><span class="val">50ms</span></td><td>Press feedback on capture controls — must feel paper-instant</td></tr>
+          <tr><td><span class="token">fast</span></td><td><span class="val">120ms</span></td><td>Hover, tabs, toggles, chip selection</td></tr>
+          <tr><td><span class="token">DEFAULT</span></td><td><span class="val">200ms</span></td><td>Most enter/exit, accordion, dropdown</td></tr>
+          <tr><td><span class="token">slow</span></td><td><span class="val">320ms</span></td><td>Bottom sheets, modals, page-level transitions</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top:14px;font-size:14px;color:var(--ink-muted)">Easing: <code>cubic-bezier(0.2, 0, 0, 1)</code> (decelerate) for entrances; <code>cubic-bezier(0.4, 0, 1, 1)</code> for exits. All motion wrapped in <code>@media (prefers-reduced-motion: no-preference)</code> — capture flows must work with zero animation.</p>
+    </section>
+
+    <!-- 07 CONFIG -->
+    <section id="config">
+      <div class="kicker"><span class="num">07</span> The single source</div>
+      <h2>tailwind.config — paste &amp; ship.</h2>
+      <p class="lead">Every value above, final, as a <code>theme.extend</code> block. This is the file Claude Code builds against; nothing here is a placeholder.</p>
+      <div class="codewrap">
+        <div class="codebar"><span class="fn"><span class="d"></span> tailwind.config.ts — theme.extend (Fulcrum tokens v1)</span><button class="copy" data-copy="cfg">Copy</button></div>
+        <pre id="code-cfg"><span class="k">export default</span> {
+  theme: { extend: {
+    colors: {
+      surface: { base:<span class="s">'#FAFAF9'</span>, raised:<span class="s">'#FFFFFF'</span>, sunken:<span class="s">'#F5F5F4'</span>,
+        hover:<span class="s">'#F0EFEE'</span>, inverse:<span class="s">'#1A1714'</span>, <span class="s">'inverse-hover'</span>:<span class="s">'#292420'</span> },
+      ink: { strong:<span class="s">'#1C1917'</span>, DEFAULT:<span class="s">'#292524'</span>, muted:<span class="s">'#57534E'</span>,
+        subtle:<span class="s">'#A8A29E'</span>, inverse:<span class="s">'#FAFAF9'</span>, <span class="s">'inverse-muted'</span>:<span class="s">'#A8A29E'</span> },
+      line: { DEFAULT:<span class="s">'#E7E5E4'</span>, strong:<span class="s">'#D6D3D1'</span>, subtle:<span class="s">'#F0EFEE'</span> },
+      accent: { subtle:<span class="s">'#FEF3C7'</span>, bright:<span class="s">'#D97706'</span>, DEFAULT:<span class="s">'#B45309'</span>,
+        strong:<span class="s">'#92400E'</span>, ring:<span class="s">'rgba(180,83,9,.35)'</span>, on:<span class="s">'#FFFFFF'</span> },
+      <span class="c">/* status — always rendered as color + symbol + label */</span>
+      info:    { fg:<span class="s">'#1D4ED8'</span>, bg:<span class="s">'#EFF6FF'</span>, border:<span class="s">'#BFDBFE'</span> },
+      success: { fg:<span class="s">'#047857'</span>, bg:<span class="s">'#ECFDF5'</span>, border:<span class="s">'#A7F3D0'</span> },
+      warning: { fg:<span class="s">'#A16207'</span>, bg:<span class="s">'#FEFCE8'</span>, border:<span class="s">'#FDE68A'</span> },
+      danger:  { fg:<span class="s">'#B91C1C'</span>, bg:<span class="s">'#FEF2F2'</span>, border:<span class="s">'#FECACA'</span> },
+      neutral: { fg:<span class="s">'#57534E'</span>, bg:<span class="s">'#F5F5F4'</span>, border:<span class="s">'#E7E5E4'</span> },
+    },
+    fontFamily: {
+      sans: [<span class="s">'"Fulcrum Sans"'</span>,<span class="s">'system-ui'</span>,<span class="s">'-apple-system'</span>,<span class="s">'"Segoe UI"'</span>,<span class="s">'Roboto'</span>,<span class="s">'sans-serif'</span>],
+      mono: [<span class="s">'"Noto Sans Mono"'</span>,<span class="s">'ui-monospace'</span>,<span class="s">'Menlo'</span>,<span class="s">'monospace'</span>],
+    },
+    fontSize: {
+      xs:  [<span class="s">'0.75rem'</span>,{lineHeight:<span class="s">'1.125rem'</span>}],   sm: [<span class="s">'0.875rem'</span>,{lineHeight:<span class="s">'1.375rem'</span>}],
+      base:[<span class="s">'1rem'</span>,   {lineHeight:<span class="s">'1.6rem'</span>}],     lg: [<span class="s">'1.125rem'</span>,{lineHeight:<span class="s">'1.75rem'</span>}],
+      xl:  [<span class="s">'1.25rem'</span>,{lineHeight:<span class="s">'1.875rem'</span>}],  <span class="s">'2xl'</span>:[<span class="s">'1.5rem'</span>,{lineHeight:<span class="s">'1.95rem'</span>}],
+      <span class="s">'3xl'</span>:[<span class="s">'1.875rem'</span>,{lineHeight:<span class="s">'2.35rem'</span>}], <span class="s">'5xl'</span>:[<span class="s">'3rem'</span>,{lineHeight:<span class="s">'3.3rem'</span>}],
+      <span class="s">'data'</span>:[<span class="s">'2rem'</span>,{lineHeight:<span class="s">'2.25rem'</span>,fontWeight:<span class="s">'700'</span>}],
+      <span class="s">'data-lg'</span>:[<span class="s">'2.75rem'</span>,{lineHeight:<span class="s">'3rem'</span>,fontWeight:<span class="s">'700'</span>}],
+    },
+    spacing: { touch:<span class="s">'2.75rem'</span>, <span class="s">'touch-lg'</span>:<span class="s">'3.5rem'</span>, field:<span class="s">'3rem'</span>,
+      gutter:<span class="s">'1rem'</span>, <span class="s">'gutter-lg'</span>:<span class="s">'2rem'</span> },
+    borderRadius: { sm:<span class="s">'0.375rem'</span>, DEFAULT:<span class="s">'0.5rem'</span>, lg:<span class="s">'0.75rem'</span>,
+      xl:<span class="s">'1rem'</span>, <span class="s">'2xl'</span>:<span class="s">'1.25rem'</span> },
+    boxShadow: {
+      xs:<span class="s">'0 1px 2px rgba(28,25,23,.06)'</span>,
+      sm:<span class="s">'0 1px 3px rgba(28,25,23,.08), 0 1px 2px rgba(28,25,23,.06)'</span>,
+      md:<span class="s">'0 4px 12px rgba(28,25,23,.08), 0 2px 4px rgba(28,25,23,.06)'</span>,
+      lg:<span class="s">'0 12px 28px rgba(28,25,23,.12), 0 4px 8px rgba(28,25,23,.06)'</span>,
+      focus:<span class="s">'0 0 0 3px rgba(180,83,9,.35)'</span>,
+    },
+    transitionDuration: { instant:<span class="s">'50ms'</span>, fast:<span class="s">'120ms'</span>, DEFAULT:<span class="s">'200ms'</span>, slow:<span class="s">'320ms'</span> },
+    transitionTimingFunction: {
+      DEFAULT:<span class="s">'cubic-bezier(0.2,0,0,1)'</span>, exit:<span class="s">'cubic-bezier(0.4,0,1,1)'</span> },
+  } },
+}</pre>
+      </div>
+    </section>
+
+    <!-- 08 QUESTIONS -->
+    <section id="questions">
+      <div class="kicker"><span class="num">08</span> Where the brief under-specifies · tensions</div>
+      <h2>Open questions &amp; the<br>tensions I resolved.</h2>
+
+      <h3>Questions for the owner</h3>
+      <div class="note-list">
+        <div class="ni"><div class="b">1</div><div class="t"><b>Dark mode?</b> The floor is often bright (daylight, glare) but some lines run night shifts. Do we owe a dark theme in Phase 1–2, or is it a later token-flip? My tokens are structured to support it (semantic surfaces), but I haven't drawn the inverse ramp yet. <b>Recommend:</b> defer, but reserve <code>surface-inverse</code> semantics now so we don't repaint later.</div></div>
+        <div class="ni"><div class="b">2</div><div class="t"><b>Numerals in body prose vs data.</b> Brief mandates Latin numerals for KPI legibility — confirmed. But in <em>translated prose</em> (a Hindi OPL remark), should an inline quantity also force Latin, or follow the sentence? I've assumed Latin everywhere for consistency. Confirm this is acceptable to native readers, or we scope it to data contexts only.</div></div>
+        <div class="ni"><div class="b">3</div><div class="t"><b>Brand wordmark.</b> Is "Fulcrum" / "TPM Fulcrum" final, and is there an existing logo lockup I should tokenize around? The cover treats it as a wordmark + amber mark placeholder. If a real mark exists, send it and I'll fold it into the shell spec next session.</div></div>
+        <div class="ni"><div class="b">4</div><div class="t"><b>Print typeface.</b> Constraint #7 says print views (OPL/Kaizen A4) must match factory PPT formats. Those formats may mandate a specific font (often Calibri/Arial). Do print stylesheets stay on Fulcrum Sans, or match the legacy PPT font for continuity? <b>Recommend:</b> Fulcrum Sans for brand coherence unless a format is contractually fixed.</div></div>
+        <div class="ni"><div class="b">5</div><div class="t"><b>Self-hosting weight budget.</b> 4 scripts × 4 weights × woff2 ≈ 16+ files. On a low-end shop-floor phone over patchy networks, is the full 700-weight set worth it, or do we cut Indic to 400/600 only and synthesize emphasis? <b>Recommend:</b> ship 400/600 per Indic script first, add 500/700 if needed — keeps the critical path light.</div></div>
+      </div>
+
+      <h3>Tensions I found — named, not silently picked</h3>
+      <div class="tension">
+        <div class="tt">Amber as brand <span class="vs2">vs</span> amber as warning</div>
+        <p>The kept accent (amber) collides with the universal convention that amber/yellow means "caution." If both are amber, a primary button and a warning badge read as the same signal.</p>
+        <div class="res"><b>Resolved:</b> brand accent is <em>burnt orange</em> (#B45309); warning status is <em>ochre/yellow</em> (#A16207) on its own tint. Distinct hues, plus warning always carries the ▲ symbol + label. The accent lives on interactive controls; warning lives in badges — they never occupy the same role.</div>
+      </div>
+      <div class="tension">
+        <div class="tt">Faster-than-paper <span class="vs2">vs</span> WCAG AA contrast</div>
+        <p>The prototype's bright orange CTA (#D97706 + white) is punchy and fast to spot — but fails AA at body text size (3.2:1). Accessibility and "instantly findable primary" pull against each other.</p>
+        <div class="res"><b>Resolved:</b> deepen the accent to #B45309 (white text = 5.0:1, passes AA), and keep #D97706 as <code>accent-bright</code> only for large fills/chart marks where AA-large (3:1) is the bar. We get both: a findable CTA <em>and</em> a compliant one.</div>
+      </div>
+      <div class="tension">
+        <div class="tt">Distinctive type <span class="vs2">vs</span> four-script harmony</div>
+        <p>Brief §2 wants more "distinctiveness"; keeping DM Sans for Latin would add character. But DM Sans only renders Latin — so the typeface would change with the language, breaking harmony for 80% of users (constraint #2).</p>
+        <div class="res"><b>Resolved in favour of harmony:</b> one Noto family across all scripts. Distinctiveness is carried by the <em>system</em> — burnt amber, surface depth, scale rhythm, the dark rail — not by a display face that abandons three of our four scripts.</div>
+      </div>
+      <div class="tension">
+        <div class="tt">Capture generosity <span class="vs2">vs</span> leader density</div>
+        <p>≥44px targets and 16px-minimum text make capture fast on a phone — but the People roster and KPI grid need density to be useful to a reviewer at a desk. One size can't serve both.</p>
+        <div class="res"><b>Resolved:</b> the system is dual-mode by surface, not one compromise. Capture surfaces use <code>touch</code> spacing + <code>base</code>↑ type; analysis surfaces may drop to <code>sm</code> type and tighter rows. Same tokens, two density profiles — codified so it's a choice, not a drift.</div>
+      </div>
+
+      <div class="callout" style="margin-top:30px">
+        <div class="ic">✋</div>
+        <p><b>Stopping here, per the brief.</b> The three reference screens — People roster, KPI entry, Kaizen detail with approval + translate — build on <em>these approved tokens</em> and come next session. Sign off (or redline) the feel, the tokens, and the font decision, and I'll build the canonical screens against them.</p>
+      </div>
+    </section>
+
+    <footer>
+      Fulcrum · Design Foundations v1 · proposed for <code>docs/design/FOUNDATIONS.md</code> · subordinate to FULCRUM_VISION.md §5.1–5.3
+    </footer>
+  </main>
+</div>
+
+<script>
+  // Copy buttons
+  const sources = {
+    fonts: document.getElementById('code-fonts'),
+    cfg: document.getElementById('code-cfg'),
+  };
+  document.querySelectorAll('.copy').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const el = sources[btn.dataset.copy];
+      navigator.clipboard.writeText(el.innerText).then(()=>{
+        const t = btn.textContent; btn.textContent='Copied ✓';
+        setTimeout(()=>btn.textContent=t,1400);
+      });
+    });
+  });
+  // Scrollspy
+  const links = [...document.querySelectorAll('.nav a')];
+  const map = new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
+  const obs = new IntersectionObserver(es=>{
+    es.forEach(e=>{
+      if(e.isIntersecting){
+        links.forEach(l=>l.classList.remove('active'));
+        const a = map.get(e.target.id); if(a) a.classList.add('active');
+      }
+    });
+  },{rootMargin:'-45% 0px -50% 0px'});
+  document.querySelectorAll('section[id]').forEach(s=>obs.observe(s));
+</script>
+</body>
+</html>

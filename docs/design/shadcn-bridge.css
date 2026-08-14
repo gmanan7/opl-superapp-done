@@ -1,0 +1,127 @@
+/* ============================================================================
+   Fulcrum — shadcn-bridge.css  ·  v1.1 (signed off 2026-06-10)   [redline 1]
+   ----------------------------------------------------------------------------
+   Maps EVERY shadcn/ui semantic CSS variable onto the Fulcrum palette so shadcn
+   components render in-system with ZERO per-component overrides.
+
+   FORMAT: values are HSL channel triplets "H S% L%", consumed as
+   `hsl(var(--token))` — this is shadcn's default globals.css contract (the
+   matching `colors:{ … 'hsl(var(--x))' }` mappings live in tokens.tailwind.ts).
+   If the project is on Tailwind v4 / @theme, swap the triplets for the hex in
+   the trailing comment — the mapping is otherwise identical.
+
+   KEY DECISIONS
+     · --primary  = brand burnt-amber (#B45309). White foreground = 5.0:1 (AA).
+     · --accent   = NEUTRAL hover (surface-hover #F0EFEE) — shadcn's `accent` is
+                    a hover/active background, NOT the brand. Brand is --primary.
+     · status     = success / warning / info added alongside --destructive so
+                    Badge/Alert variants are in-system (always paired w/ symbol+label).
+     · sidebar-*  = the dark rail. Plus a `.dark-rail` scope (bottom) that remaps
+                    the CORE vars for any shadcn component placed INSIDE the rail.
+   ========================================================================== */
+
+:root {
+  /* ── Base surfaces & text ───────────────────────────────────────────── */
+  --background: 60 9% 98%;            /* surface-base    #FAFAF9 */
+  --foreground: 20 6% 15%;            /* ink             #292524 */
+  --card: 0 0% 100%;                  /* surface-raised  #FFFFFF */
+  --card-foreground: 20 6% 15%;       /* ink             #292524 */
+  --popover: 0 0% 100%;               /* surface-raised  #FFFFFF */
+  --popover-foreground: 20 6% 15%;    /* ink             #292524 */
+
+  /* ── Brand / primary ────────────────────────────────────────────────── */
+  --primary: 26 90% 37%;              /* brand.DEFAULT   #B45309 */
+  --primary-foreground: 0 0% 100%;    /* brand.on        #FFFFFF */
+
+  /* ── Secondary & muted (warm-neutral) ───────────────────────────────── */
+  --secondary: 60 5% 96%;             /* surface-sunken  #F5F5F4 */
+  --secondary-foreground: 24 10% 10%; /* ink-strong      #1C1917 */
+  --muted: 60 5% 96%;                 /* surface-sunken  #F5F5F4 */
+  --muted-foreground: 30 6% 32%;      /* ink-muted       #57534E */
+
+  /* ── Accent = NEUTRAL hover (NOT brand) ─────────────────────────────── */
+  --accent: 30 7% 94%;                /* surface-hover   #F0EFEE */
+  --accent-foreground: 24 10% 10%;    /* ink-strong      #1C1917 */
+
+  /* ── Status (color + symbol + label, never color alone) ─────────────── */
+  --destructive: 0 74% 42%;           /* danger.fg       #B91C1C */
+  --destructive-foreground: 0 0% 100%;/*                 #FFFFFF */
+  --success: 163 90% 24%;             /* success.fg      #047857 */
+  --success-foreground: 0 0% 100%;    /*                 #FFFFFF */
+  --warning: 35 92% 33%;              /* warning.fg      #A16207 (ochre) */
+  --warning-foreground: 0 0% 100%;    /*                 #FFFFFF */
+  --info: 224 76% 48%;                /* info.fg         #1D4ED8 */
+  --info-foreground: 0 0% 100%;       /*                 #FFFFFF */
+
+  /* ── Lines & focus ──────────────────────────────────────────────────── */
+  --border: 20 6% 90%;                /* line.DEFAULT    #E7E5E4 */
+  --input: 20 6% 90%;                 /* line.DEFAULT    #E7E5E4 */
+  --ring: 26 90% 37%;                 /* brand.DEFAULT   #B45309 */
+
+  /* ── Radius (shadcn derives sm/md/lg from this) ─────────────────────── */
+  --radius: 0.5rem;
+
+  /* ── Charts (categorical, color-blind-spread) ───────────────────────── */
+  --chart-1: 32 95% 44%;              /* brand.bright    #D97706 */
+  --chart-2: 224 76% 48%;             /* info            #1D4ED8 */
+  --chart-3: 163 90% 24%;             /* success         #047857 */
+  --chart-4: 35 92% 33%;              /* warning         #A16207 */
+  --chart-5: 24 6% 64%;               /* ink-subtle      #A8A29E */
+
+  /* ── Sidebar / dark rail (shadcn sidebar primitive) ─────────────────── */
+  --sidebar: 30 13% 9%;                       /* surface-inverse        #1A1714 */
+  --sidebar-background: 30 13% 9%;            /* alias (older shadcn name) */
+  --sidebar-foreground: 60 9% 98%;            /* ink-inverse            #FAFAF9 */
+  --sidebar-primary: 32 95% 44%;              /* brand.bright           #D97706 */
+  --sidebar-primary-foreground: 30 13% 9%;    /* surface-inverse        #1A1714 */
+  --sidebar-accent: 27 12% 14%;               /* surface-inverse-hover  #292420 */
+  --sidebar-accent-foreground: 60 9% 98%;     /* ink-inverse            #FAFAF9 */
+  --sidebar-border: 27 12% 14%;               /* surface-inverse-hover  #292420 */
+  --sidebar-ring: 32 95% 44%;                 /* brand.bright           #D97706 */
+}
+
+/* ============================================================================
+   DARK-RAIL CONTEXT SCOPE
+   Wrap the sidebar / any inverse surface in `.dark-rail` (or [data-rail]) so a
+   shadcn Button/Select/Input/Tabs placed INSIDE it inherits inverse semantics
+   without bespoke styling. Core vars are remapped to the inverse ramp here.
+
+   Note: portalled overlays (DropdownMenu/Popover/Tooltip content) render at the
+   document root by default and therefore stay in the LIGHT context — which is
+   usually what you want for a menu opened from the rail. If you need a dark
+   overlay, add `.dark-rail` to that component's `content` className.
+   ========================================================================== */
+.dark-rail,
+[data-rail] {
+  --background: 30 13% 9%;            /* surface-inverse        #1A1714 */
+  --foreground: 60 9% 98%;            /* ink-inverse            #FAFAF9 */
+  --card: 27 12% 14%;                 /* surface-inverse-hover  #292420 */
+  --card-foreground: 60 9% 98%;
+  --popover: 27 12% 14%;
+  --popover-foreground: 60 9% 98%;
+  --primary: 32 95% 44%;             /* brand.bright on dark   #D97706 */
+  --primary-foreground: 30 13% 9%;
+  --secondary: 27 12% 14%;
+  --secondary-foreground: 60 9% 98%;
+  --muted: 27 12% 14%;
+  --muted-foreground: 24 6% 64%;     /* ink-subtle             #A8A29E */
+  --accent: 27 12% 14%;              /* inverse hover          #292420 */
+  --accent-foreground: 60 9% 98%;
+  --border: 27 12% 14%;
+  --input: 27 12% 14%;
+  --ring: 32 95% 44%;
+}
+
+/* ============================================================================
+   BASE LAYER  (mirror of shadcn's globals.css @layer base, written as raw CSS
+   so it has no build-time @apply dependency).
+   ========================================================================== */
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+}
