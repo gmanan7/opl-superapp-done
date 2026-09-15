@@ -151,7 +151,7 @@ export function Machines() {
           <SelectContent>
             <SelectItem value={ALL}>{t('mdm.machines.allAreas')}</SelectItem>
             {(filters.groupId === ALL
-            ? allGroups.flatMap((g) => g.areas)
+            ? allGroups.flatMap((g) => g.areas ?? [])
             : groupsById.get(filters.groupId)?.areas ?? []).map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
           </SelectContent>
         </Select>

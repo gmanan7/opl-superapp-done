@@ -1,5 +1,6 @@
 @import "tailwindcss";
-/* Fulcrum Sans @font-face set (15 woff2 in public/fonts/) — single source in docs/design/ (D-018). */
+/* Fulcrum Sans @font-face set (5 woff2 in public/fonts/, one 400 face per script;
+   bold weights are synthesised) — single source in docs/design/fonts.css. */
 @import "../../docs/design/fonts.css";
 /* shadcn/ui CSS-variable bridge — single source in docs/design/ (D-018). */
 @import "../../docs/design/shadcn-bridge.css";
@@ -8,6 +9,27 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* ---------------------------------------------------------------------------
+   Screen-flexibility guardrails.
+
+   The app is laid out with flex/grid throughout. A flex or grid ITEM defaults
+   to `min-width: auto`, which means it refuses to shrink below its content's
+   intrinsic width — so one wide table / long unbroken string / fixed-width
+   block stretches its whole ancestor chain past the viewport, and the phone
+   browser responds by zooming the page out. These rules stop that at the root:
+
+     - html/body never scroll horizontally, so nothing can widen the viewport.
+     - the flex chain down to the page content is allowed to shrink (min-width:0).
+
+   Content that genuinely needs to be wide (data tables, the A4 OPL sheet) must
+   scroll INSIDE its own `overflow-x-auto` container — never push the page.
+   --------------------------------------------------------------------------- */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -21,4 +43,36 @@ body {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Long unbroken tokens (emails, employee IDs, URLs, pasted codes) are a common
+   source of overflow inside otherwise-fine cards. Let them wrap by default.
+
+   Deliberately NOT applied to td/th: `anywhere` also drives min-content sizing,
+   so on a narrow screen a multi-column table collapses each column to one
+   character and renders text vertically. Data tables instead keep their natural
+   width via a `min-w-[…]` and scroll inside an `overflow-x-auto` wrapper. */
+p,
+li,
+label,
+h1, h2, h3, h4, h5, h6 {
+  overflow-wrap: anywhere;
+}
+
+/* Table cells keep normal word-breaking, so a narrow screen makes the table
+   exceed its wrapper and scroll (correct) rather than stacking letters
+   vertically. Individual data tables set an explicit `min-w-[…]` where their
+   natural width is still too small to stay legible. */
+th {
+  white-space: nowrap;
+}
+
+/* Media never exceeds its container. */
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
 }

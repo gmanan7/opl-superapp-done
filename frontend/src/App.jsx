@@ -10,21 +10,32 @@ import { Login } from './pages/Login';
 import { ModuleSelect } from './pages/ModuleSelect';
 import { Home } from './pages/Home';
 import { AbnormalityList } from './pages/abnormalities/AbnormalityList';
-import { AbnormalityForm } from './pages/abnormalities/AbnormalityForm';
-import { AbnormalityDetail } from './pages/abnormalities/AbnormalityDetail';
 import { MachineSubsectionManager } from './pages/admin/MachineSubsectionManager';
 import { OrgStructure } from './pages/admin/mdm/OrgStructure';
 import { Machines } from './pages/admin/mdm/Machines';
 import { People } from './pages/admin/mdm/People';
 import { BulkImport } from './pages/admin/mdm/BulkImport';
-import { KPILanding } from './pages/kpis/KPILanding';
 import { OPLList } from './pages/opl/OPLList';
-import { OPLForm } from './pages/opl/OPLForm';
-import { OPLDetail } from './pages/opl/OPLDetail';
-import { OPLTrainingDue } from './pages/opl/OPLTrainingDue';
 import { KaizenList } from './pages/kaizen/KaizenList';
-import { KaizenForm } from './pages/kaizen/KaizenForm';
-import { KaizenDetail } from './pages/kaizen/KaizenDetail';
+import { AuditsHome } from './pages/audits/AuditsHome';
+import { AuditCapture } from './pages/audits/AuditCapture';
+import { AuditReport } from './pages/audits/AuditReport';
+import { DmtShell } from './dmt/DmtShell';
+import { DmtDashboard } from './dmt/pages/DmtDashboard';
+import { DmtPlanner } from './dmt/pages/DmtPlanner';
+import { DmtKpiEntry } from './dmt/pages/DmtKpiEntry';
+import { DmtTaskBoard } from './dmt/pages/DmtTaskBoard';
+import { DmtMeetings } from './dmt/pages/DmtMeetings';
+import { DmtMeetingWorkspace } from './dmt/pages/DmtMeetingWorkspace';
+import { DmtPmSchedule } from './dmt/pages/DmtPmSchedule';
+import { DmtPdCycle } from './dmt/pages/DmtPdCycle';
+import { DmtKpiTrends } from './dmt/pages/DmtKpiTrends';
+import { DmtCompliance } from './dmt/pages/DmtCompliance';
+import { DmtDecisionLog } from './dmt/pages/DmtDecisionLog';
+import { DmtOrganisation } from './dmt/pages/DmtOrganisation';
+import { DmtAdminAudit } from './dmt/pages/DmtAdminAudit';
+import { DmtAdminTaskOverview } from './dmt/pages/DmtAdminTaskOverview';
+import { DmtAdminCharts } from './dmt/pages/DmtAdminCharts';
 const queryClient = new QueryClient({
     defaultOptions: {
         queries: {
@@ -75,6 +86,12 @@ export default function App() {
                   <ModuleSelect />
                 </RequireAuth>}/>
 
+            {/* Audit report — full-page printable document, deliberately OUTSIDE AppShell so
+                the sidebar / bottom nav don't print. Auth still enforced. */}
+            <Route path="/audits/report/:id" element={<RequireAuth>
+                  <AuditReport />
+                </RequireAuth>}/>
+
             {/* Protected shell */}
             <Route path="/" element={<RequireAuth>
                   <SessionGuard>
@@ -84,51 +101,75 @@ export default function App() {
               <Route index element={<Navigate to="/select-module" replace/>}/>
               <Route path="home" element={<Home />}/>
 
-              {/* Abnormalities */}
+              {/* Abnormalities — single page: report + list, no extra navigation */}
               <Route path="abnormalities" element={<AbnormalityList />}/>
-              <Route path="abnormalities/new" element={<AbnormalityForm />}/>
-              <Route path="abnormalities/:id" element={<AbnormalityDetail />}/>
+              <Route path="abnormalities/new" element={<Navigate to="/abnormalities" replace/>}/>
 
               {/* Admin — legacy /admin/users removed (Phase 2 Step 3a): MDM People
             (/admin/mdm/people) is the governed roster. Email password-reset
             migrated there; participation-stats deferred to Phase 5 analytics. */}
-              <Route path="admin/subsections" element={<RequireRole minimum="pillar_champion">
+              <Route path="admin/subsections" element={<RequireRole minimum="module_lead">
                     <MachineSubsectionManager />
                   </RequireRole>}/>
 
               {/* MDM (module zero) — route guards are UX/D4 hygiene; RLS is the control */}
-              <Route path="admin/mdm/org" element={<RequireRole minimum="admin">
+              <Route path="admin/mdm/org" element={<RequireRole minimum="be_lead">
                     <OrgStructure />
                   </RequireRole>}/>
-              <Route path="admin/mdm/machines" element={<RequireRole minimum="dmt_leader">
+              <Route path="admin/mdm/machines" element={<RequireRole minimum="module_lead">
                     <Machines />
                   </RequireRole>}/>
               <Route path="admin/mdm/people" element={<RequireRole minimum="it_lead">
                     <People />
                   </RequireRole>}/>
-              {/* Step 8 — bulk import: admin-only at route, Edge and RLS */}
-              <Route path="admin/mdm/people/import" element={<RequireRole minimum="admin">
+              {/* Step 8 — bulk import: high-risk mass data changes, be_lead+ only */}
+              <Route path="admin/mdm/people/import" element={<RequireRole minimum="be_lead">
                     <BulkImport entity="workers"/>
                   </RequireRole>}/>
-              <Route path="admin/mdm/machines/import" element={<RequireRole minimum="admin">
+              <Route path="admin/mdm/machines/import" element={<RequireRole minimum="be_lead">
                     <BulkImport entity="machines"/>
                   </RequireRole>}/>
 
-              {/* KPIs (Phase 3 M1) — role-conditional landing: capture cards + grouped trend */}
-              <Route path="kpis" element={<KPILanding />}/>
+              {/* Audits ('audits/report/:id' is a top-level route above — printable page) */}
+              <Route path="audits" element={<AuditsHome />}/>
+              <Route path="audits/:id" element={<AuditCapture />}/>
 
               {/* OPL */}
               <Route path="opl" element={<OPLList />}/>
-              <Route path="opl/new" element={<OPLForm />}/>
-              <Route path="opl/training" element={<OPLTrainingDue />}/>
-              <Route path="opl/:id" element={<OPLDetail />}/>
-              <Route path="opl/:id/edit" element={<OPLForm />}/>
               {/* Kaizen */}
               <Route path="kaizen" element={<KaizenList />}/>
-              <Route path="kaizen/new" element={<KaizenForm />}/>
-              <Route path="kaizen/:id" element={<KaizenDetail />}/>
-              <Route path="kaizen/:id/edit" element={<KaizenForm />}/>
               <Route path="more" element={<ComingSoon label="More"/>}/>
+            </Route>
+
+            {/* DMT module — its own shell, own sidebar, /dmt/* route tree */}
+            <Route path="/dmt" element={<RequireAuth>
+                  <SessionGuard>
+                    <DmtShell />
+                  </SessionGuard>
+                </RequireAuth>}>
+              <Route index element={<DmtDashboard />}/>
+              {/* My View folded into the Dashboard — keep old links working */}
+              <Route path="my-view" element={<Navigate to="/dmt" replace />}/>
+              <Route path="tasks" element={<DmtTaskBoard />}/>
+              <Route path="meetings" element={<DmtMeetings />}/>
+              {/* Departments/KPI Master/Meeting Templates/Analytics folded into one Organisation page */}
+              <Route path="meetings/templates" element={<Navigate to="/dmt/organisation" replace />}/>
+              <Route path="meetings/decisions" element={<DmtDecisionLog />}/>
+              <Route path="meetings/:id" element={<DmtMeetingWorkspace />}/>
+              <Route path="compliance" element={<DmtCompliance />}/>
+              <Route path="kpi/entry" element={<DmtKpiEntry />}/>
+              <Route path="kpi/master" element={<Navigate to="/dmt/organisation" replace />}/>
+              <Route path="kpi/trends" element={<DmtKpiTrends />}/>
+              <Route path="pm-schedule" element={<DmtPmSchedule />}/>
+              <Route path="pd-cycle" element={<DmtPdCycle />}/>
+              <Route path="planner" element={<DmtPlanner />}/>
+              <Route path="tiers" element={<Navigate to="/dmt/organisation" replace />}/>
+              <Route path="admin/departments" element={<Navigate to="/dmt/organisation" replace />}/>
+              <Route path="admin/analytics" element={<Navigate to="/dmt/organisation" replace />}/>
+              <Route path="organisation" element={<DmtOrganisation />}/>
+              <Route path="admin/tasks" element={<DmtAdminTaskOverview />}/>
+              <Route path="admin/charts" element={<DmtAdminCharts />}/>
+              <Route path="admin/audit" element={<DmtAdminAudit />}/>
             </Route>
 
             {/* Fallback */}

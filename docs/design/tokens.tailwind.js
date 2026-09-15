@@ -54,13 +54,13 @@ const fulcrumTokens = {
                     strong: "#D6D3D1", // input borders, emphasis rules
                     subtle: "#F0EFEE", // hairlines on white
                 },
-                // Brand accent — burnt amber. White text on `brand.DEFAULT` = 5.0:1 (AA).
+                // Brand accent — blue. White text on `brand.DEFAULT` = 5.2:1 (AA).
                 brand: {
-                    subtle: "#FEF3C7", // tints, selected rows, focus halo
-                    bright: "#D97706", // large fills & chart marks (AA-large only)
-                    DEFAULT: "#B45309", // primary buttons, links, focus ring base
-                    strong: "#92400E", // hover / active / accent text on light
-                    ring: "rgba(180,83,9,.35)", // focus ring color
+                    subtle: "#DBEAFE", // tints, selected rows, focus halo
+                    bright: "#3B82F6", // large fills & chart marks (AA-large only)
+                    DEFAULT: "#2563EB", // primary buttons, links, focus ring base
+                    strong: "#1D4ED8", // hover / active / accent text on light
+                    ring: "rgba(37,99,235,.35)", // focus ring color
                     on: "#FFFFFF", // text/icon on brand fills
                 },
                 /* status — ALWAYS rendered as color + symbol + label (never color alone) */

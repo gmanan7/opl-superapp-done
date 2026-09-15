@@ -1,10 +1,5 @@
-export function extractStoragePath(urlOrPath) {
-    const marker = '/tpm-uploads/';
-    const idx = urlOrPath.indexOf(marker);
-    return idx !== -1 ? urlOrPath.substring(idx + marker.length) : urlOrPath;
-}
+// Image URLs from the upload endpoint are already plain, directly-usable URLs —
+// this hook is a passthrough kept only so callers don't need to change.
 export function useStorageUrl(urlOrPath) {
-    if (!urlOrPath)
-        return null;
-    return urlOrPath;
+    return urlOrPath || null;
 }

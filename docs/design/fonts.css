@@ -1,32 +1,22 @@
 /* ============================================================================
-   Fulcrum — fonts.css  ·  v1.1 (signed off 2026-06-10)
+   Fulcrum — fonts.css  ·  v2 (offline build)
    ----------------------------------------------------------------------------
    ONE logical family — "Fulcrum Sans" — covering Latin · Devanagari · Gujarati
    · Tamil. The browser routes each codepoint to the right Noto face via
    unicode-range, so application code only ever writes:  font-family: "Fulcrum Sans".
 
-   WEIGHT BUDGET (ruled):
-     · Latin   400 / 500 / 600 / 700   (700 used only by display/numeric tokens)
-     · Indic   400 / 500 / 600         (NO 700 — never synthesize bold on Indic)
-     · Mono    400 / 500               (Latin numerals + currency only)
+   Only the 400-weight woff2 files ship in public/fonts/ (the app is fully
+   offline / air-gapped — no font CDN). Every @font-face here therefore points
+   at the 400 file; bolder weights (500 / 600 / 700 that the UI uses on
+   headings and labels) are synthesised by the browser from this one face, so
+   the SAME typeface renders at every weight everywhere in the app. Previously
+   the 500/600/700 rules pointed at files that don't exist, which silently
+   dropped bold text to a different system font.
 
-   NUMERALS: Latin / Western-Arabic everywhere. Currency (₹ ₨ …) lives in the
-   Latin + Indic ranges so a price renders consistently in any sentence.
-
-   LOADING: self-hosted woff2, font-display: swap. Preload only what the first
-   paint needs (see <head> snippet at the bottom of this file).
-
-   FALLBACK CHAIN (set in tokens.tailwind.ts → fontFamily.sans):
-     "Fulcrum Sans", "Nirmala UI", system-ui, -apple-system, "Segoe UI",
-     Roboto, "Noto Sans", sans-serif
-       · Nirmala UI (Windows) covers Devanagari/Gujarati/Tamil during swap.
-       · system-ui / Roboto cover Latin on macOS/iOS/Android during swap.
+   NUMERALS: Latin / Western-Arabic everywhere, lining + tabular figures.
    ========================================================================== */
 
-/* ===========================  LATIN  (400/500/600/700)  ====================
-   Range = Basic Latin + Latin-1 + Latin Extended-A/B + punctuation
-   + CURRENCY U+20A0–20BF (₹ et al., per redline 2) + common symbols.        */
-
+/* ===========================  LATIN  ====================================== */
 @font-face {
   font-family: "Fulcrum Sans";
   font-style: normal;
@@ -37,41 +27,8 @@
     U+2074, U+20A0-20BF, U+2113, U+2122, U+2191, U+2193, U+2212, U+2215,
     U+2C60-2C7F, U+A720-A7FF, U+FB00-FB04, U+FEFF, U+FFFD;
 }
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/noto-sans-latin-500.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0100-024F, U+0259, U+1E00-1EFF, U+2000-206F,
-    U+2074, U+20A0-20BF, U+2113, U+2122, U+2191, U+2193, U+2212, U+2215,
-    U+2C60-2C7F, U+A720-A7FF, U+FB00-FB04, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/noto-sans-latin-600.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0100-024F, U+0259, U+1E00-1EFF, U+2000-206F,
-    U+2074, U+20A0-20BF, U+2113, U+2122, U+2191, U+2193, U+2212, U+2215,
-    U+2C60-2C7F, U+A720-A7FF, U+FB00-FB04, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 700; /* Latin only — used by 5xl / data / data-lg display tokens */
-  font-display: swap;
-  src: url("/fonts/noto-sans-latin-700.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0100-024F, U+0259, U+1E00-1EFF, U+2000-206F,
-    U+2074, U+20A0-20BF, U+2113, U+2122, U+2191, U+2193, U+2212, U+2215,
-    U+2C60-2C7F, U+A720-A7FF, U+FB00-FB04, U+FEFF, U+FFFD;
-}
 
-/* ========================  DEVANAGARI  (400/500/600)  ======================
-   Range = Devanagari + Vedic Ext + ZWNJ/ZWJ U+200C–200D (redline 2)
-   + danda U+0964–0965 + ₹ ₨ + dotted-circle U+25CC + Devanagari Extended.   */
-
+/* ========================  DEVANAGARI  =================================== */
 @font-face {
   font-family: "Fulcrum Sans";
   font-style: normal;
@@ -81,29 +38,8 @@
   unicode-range: U+0900-097F, U+0964-0965, U+1CD0-1CFF, U+200C-200D,
     U+20A8, U+20B9, U+25CC, U+A830-A839, U+A8E0-A8FF;
 }
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/noto-sans-devanagari-500.woff2") format("woff2");
-  unicode-range: U+0900-097F, U+0964-0965, U+1CD0-1CFF, U+200C-200D,
-    U+20A8, U+20B9, U+25CC, U+A830-A839, U+A8E0-A8FF;
-}
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/noto-sans-devanagari-600.woff2") format("woff2");
-  unicode-range: U+0900-097F, U+0964-0965, U+1CD0-1CFF, U+200C-200D,
-    U+20A8, U+20B9, U+25CC, U+A830-A839, U+A8E0-A8FF;
-}
 
-/* =========================  GUJARATI  (400/500/600)  =======================
-   Range = Gujarati block + ZWNJ/ZWJ U+200C–200D (redline 2)
-   + danda U+0964–0965 + ₹ ₨ + dotted-circle U+25CC.                          */
-
+/* =========================  GUJARATI  =================================== */
 @font-face {
   font-family: "Fulcrum Sans";
   font-style: normal;
@@ -113,29 +49,8 @@
   unicode-range: U+0964-0965, U+0A80-0AFF, U+200C-200D,
     U+20A8, U+20B9, U+25CC, U+A830-A839;
 }
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/noto-sans-gujarati-500.woff2") format("woff2");
-  unicode-range: U+0964-0965, U+0A80-0AFF, U+200C-200D,
-    U+20A8, U+20B9, U+25CC, U+A830-A839;
-}
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/noto-sans-gujarati-600.woff2") format("woff2");
-  unicode-range: U+0964-0965, U+0A80-0AFF, U+200C-200D,
-    U+20A8, U+20B9, U+25CC, U+A830-A839;
-}
 
-/* ===========================  TAMIL  (400/500/600)  ========================
-   Range = Tamil block + ZWNJ/ZWJ U+200C–200D (already present, retained)
-   + danda U+0964–0965 + ₹ + dotted-circle U+25CC.                            */
-
+/* ===========================  TAMIL  =================================== */
 @font-face {
   font-family: "Fulcrum Sans";
   font-style: normal;
@@ -144,27 +59,8 @@
   src: url("/fonts/noto-sans-tamil-400.woff2") format("woff2");
   unicode-range: U+0964-0965, U+0B80-0BFF, U+200C-200D, U+20B9, U+25CC;
 }
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/noto-sans-tamil-500.woff2") format("woff2");
-  unicode-range: U+0964-0965, U+0B80-0BFF, U+200C-200D, U+20B9, U+25CC;
-}
-@font-face {
-  font-family: "Fulcrum Sans";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/noto-sans-tamil-600.woff2") format("woff2");
-  unicode-range: U+0964-0965, U+0B80-0BFF, U+200C-200D, U+20B9, U+25CC;
-}
 
-/* ============================  MONO  (400/500)  ============================
-   "Fulcrum Mono" = Noto Sans Mono. For tabular data, codes, timestamps, IDs.
-   Latin + currency only (numbers are always Latin).                          */
-
+/* ============================  MONO  =================================== */
 @font-face {
   font-family: "Fulcrum Mono";
   font-style: normal;
@@ -174,20 +70,9 @@
   unicode-range: U+0000-00FF, U+0100-024F, U+2000-206F, U+20A0-20BF,
     U+2212, U+2215, U+FEFF, U+FFFD;
 }
-@font-face {
-  font-family: "Fulcrum Mono";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/noto-sans-mono-500.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0100-024F, U+2000-206F, U+20A0-20BF,
-    U+2212, U+2215, U+FEFF, U+FFFD;
-}
 
 /* ============================================================================
    GLOBAL TYPE DEFAULTS
-   Latin numerals + tabular figures are the system default so KPI columns align
-   and never reshape. Submitted user content keeps its own script verbatim (L7).
    ========================================================================== */
 :root {
   --font-sans: "Fulcrum Sans", "Nirmala UI", system-ui, -apple-system,
@@ -195,31 +80,15 @@
   --font-mono: "Fulcrum Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
-html {
+html,
+body {
   font-family: var(--font-sans);
-  font-feature-settings: "lnum" 1;          /* lining (not old-style) numerals */
+  font-feature-settings: "lnum" 1;
   font-variant-numeric: lining-nums;
 }
 
-/* Apply to any numeric/tabular surface: KPI figures, data tables, charts. */
 .tabular,
 [data-numeric] {
   font-variant-numeric: lining-nums tabular-nums;
   font-feature-settings: "lnum" 1, "tnum" 1;
 }
-
-/* ============================================================================
-   PRELOAD (place in <head>, before stylesheets). Preload only the critical
-   faces: Latin 400/600 always, plus the ACTIVE locale's 400/600 (inject by
-   server/locale). Everything else lazy-loads under font-display: swap.
-
-   <link rel="preload" as="font" type="font/woff2" crossorigin
-         href="/fonts/noto-sans-latin-400.woff2">
-   <link rel="preload" as="font" type="font/woff2" crossorigin
-         href="/fonts/noto-sans-latin-600.woff2">
-   <!-- when lang=hi -->
-   <link rel="preload" as="font" type="font/woff2" crossorigin
-         href="/fonts/noto-sans-devanagari-400.woff2">
-   <link rel="preload" as="font" type="font/woff2" crossorigin
-         href="/fonts/noto-sans-devanagari-600.woff2">
-   ========================================================================== */

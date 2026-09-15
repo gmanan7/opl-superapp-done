@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, BookOpen, Lightbulb, LogOut } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import i18n from '../i18n';
 import { useAuth } from '../hooks/useAuth';
 import { logout } from '../lib/auth';
@@ -91,15 +91,20 @@ export function Home() {
         queryKey: ['home-stats', ctx?.factory_id, ctx?.jh_group_id],
         staleTime: 1000 * 60 * 2,
         queryFn: async () => {
-            const [abns, opls, kaizens] = await Promise.all([
-                api.getAbnormalities(),
-                api.getOPLs(),
-                api.getKaizens(),
+            const [abns, oplDetails, kaizenDetails] = await Promise.all([
+                api.getAbnormalityDetails(),
+                api.getOplDetails(),
+                api.getKaizenDetails(),
             ]);
+            const now = new Date();
+            const isThisMonth = (ts) => {
+                const t = new Date(ts);
+                return t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth();
+            };
             return {
-                openAbn: abns.filter((a) => a.status !== 'closed' && a.status !== 'rejected').length,
-                oplCount: opls.length,
-                kaizenCount: kaizens.length,
+                openAbn: abns.filter((a) => isThisMonth(a.timestamp)).length,
+                oplCount: oplDetails.length,
+                kaizenCount: kaizenDetails.filter((k) => isThisMonth(k.timestamp)).length,
             };
         },
     });
@@ -132,32 +137,20 @@ export function Home() {
       <div className="px-5 py-6 space-y-7 max-w-5xl">
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-400 mb-3">Overview</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard label="Open Abnormalities" value={stats?.openAbn ?? '—'} leftBorderColor="border-l-red-500" valueColor="text-red-600"/>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <StatCard label="Abnormalities This Month" value={stats?.openAbn ?? '—'} leftBorderColor="border-l-red-500" valueColor="text-red-600"/>
             <StatCard label="OPLs This Month" value={stats?.oplCount ?? '—'} leftBorderColor="border-l-blue-500" valueColor="text-blue-600"/>
             <StatCard label="Kaizens This Month" value={stats?.kaizenCount ?? '—'} leftBorderColor="border-l-green-500" valueColor="text-green-600"/>
-            <StatCard label="CLTI Due Today" value="—" leftBorderColor="border-l-amber-500" valueColor="text-amber-600"/>
           </div>
         </section>
 
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-400 mb-3">
-            {t('home.quickActions')}
+            Functions available
           </h2>
-          <div className="flex flex-col sm:flex-row flex-wrap gap-2">
-            <button onClick={() => navigate('/abnormalities/new')} className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors w-full sm:w-auto flex-1 sm:flex-none">
-              <AlertTriangle size={15}/>
-              {t('home.reportIssue')}
-            </button>
-            <button onClick={() => navigate('/opl')} className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors w-full sm:w-auto flex-1 sm:flex-none">
-              <BookOpen size={15}/>
-              {t('home.viewOpl')}
-            </button>
-            <button onClick={() => navigate('/kaizen')} className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors w-full sm:w-auto flex-1 sm:flex-none">
-              <Lightbulb size={15}/>
-              {t('home.submitKaizen')}
-            </button>
-          </div>
+          <p className="text-sm text-stone-600">
+            OPL, Kaizen, Abnormalities and Audits — open any of them from the menu below.
+          </p>
         </section>
       </div>
     </div>);

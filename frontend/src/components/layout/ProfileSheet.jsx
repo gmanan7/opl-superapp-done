@@ -5,14 +5,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '
 import { Button } from '@/components/ui/button';
 import { logout } from '../../lib/auth';
 import { useAuth } from '../../hooks/useAuth';
-import { useFactoryModules, buildEnabledSet } from '../../hooks/mdm';
 import { NAV_CONFIG, visibleNav } from './navConfig';
 export function ProfileSheet({ open, onOpenChange }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const { name, role } = useAuth();
-    const enabled = buildEnabledSet(useFactoryModules().data);
-    const adminNav = visibleNav(NAV_CONFIG, role, enabled, 'admin');
+    const adminNav = visibleNav(NAV_CONFIG, role, 'admin');
     async function handleLogout() {
         await logout();
         onOpenChange(false);

@@ -2,109 +2,89 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { roleAtLeast, getSessionContext } from '../lib/auth';
 export { roleAtLeast, getSessionContext };
-export function useAbnormalities(filters = {}) {
+export function useAbnormalityDetails() {
     const ctx = getSessionContext();
     return useQuery({
-        queryKey: ['abnormality', 'list', filters, ctx?.factory_id, ctx?.jh_group_id, ctx?.role],
-        queryFn: async () => {
-            const data = await api.getAbnormalities();
-            return data;
-        },
+        queryKey: ['abnormality-details', 'list', ctx?.factory_id, ctx?.jh_group_id, ctx?.role],
+        queryFn: async () => api.getAbnormalityDetails(),
     });
 }
-export function useAbnormality(id) {
+export function useAbnormalityDetail(id) {
     return useQuery({
-        queryKey: ['abnormality', id],
+        queryKey: ['abnormality-details', id],
         enabled: !!id,
-        queryFn: async () => {
-            const data = await api.getAbnormality(id);
-            return {
-                ...data.abnormality,
-                assignments: data.assignments || [],
-                updates: data.updates || []
-            };
-        },
+        queryFn: async () => api.getAbnormalityDetail(id),
     });
 }
-export function useCreateAbnormality() {
+export function useCreateAbnormalityDetail() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: async (input) => {
-            return api.createAbnormality(input);
-        },
+        mutationFn: async (input) => api.createAbnormalityDetail(input),
         onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['abnormality', 'list'] });
+            qc.invalidateQueries({ queryKey: ['abnormality-details', 'list'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         },
     });
 }
-export function useUpdateAbnormality() {
+export function useAbnormalityResponsibilities() {
+    return useQuery({
+        queryKey: ['abnormality-responsibilities'],
+        queryFn: async () => api.getAbnormalityResponsibilities(),
+    });
+}
+export function useReviewAbnormalityDetail() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: async ({ id, status, status_from, note }) => {
-            return api.createAbnormality({ id, status, status_from, note });
-        },
-        onSuccess: (_data, vars) => {
-            qc.invalidateQueries({ queryKey: ['abnormality', 'list'] });
-            qc.invalidateQueries({ queryKey: ['abnormality', vars.id] });
+        mutationFn: async ({ id, ...data }) => api.reviewAbnormalityDetail(id, data),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['abnormality-details', 'list'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         },
     });
 }
-export function useAssignAbnormality() {
+export function useAbnormalityAnalytics(params = {}) {
+    return useQuery({
+        queryKey: ['abnormality-analytics', params],
+        staleTime: 1000 * 60,
+        queryFn: async () => api.getAbnormalityAnalytics(params),
+    });
+}
+export function useAbnormalityAnalyticsTrend(params = {}, options = {}) {
+    return useQuery({
+        queryKey: ['abnormality-analytics-trend', params],
+        staleTime: 1000 * 60,
+        enabled: options.enabled !== false,
+        queryFn: async () => api.getAbnormalityAnalyticsTrend(params),
+    });
+}
+export function useAbnormalityAuditTrail(abnormalityId) {
+    return useQuery({
+        queryKey: ['abnormality-audit-trail', abnormalityId],
+        enabled: Boolean(abnormalityId),
+        queryFn: async () => api.getAbnormalityAuditTrail(abnormalityId),
+    });
+}
+
+export function useAbnormalityRepositorySetting() {
+    return useQuery({
+        queryKey: ['abnormality-repository-setting'],
+        staleTime: 1000 * 60 * 5,
+        queryFn: async () => api.getAbnormalityRepositorySetting(),
+    });
+}
+export function useUpdateAbnormalityRepositorySetting() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: async (input) => {
-            return api.createAbnormality(input);
-        },
-        onSuccess: (_data, vars) => {
-            qc.invalidateQueries({ queryKey: ['abnormality', 'list'] });
-            qc.invalidateQueries({ queryKey: ['abnormality', vars.abnormality_id] });
-        },
+        mutationFn: async (extra_factory_ids) => api.updateAbnormalityRepositorySetting(extra_factory_ids),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['abnormality-repository-setting'] }),
     });
 }
-export function useAddAbnormalityUpdate() {
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: async ({ abnormality_id, note }) => {
-            return api.createAbnormality({ abnormality_id, note });
-        },
-        onSuccess: (_data, vars) => {
-            qc.invalidateQueries({ queryKey: ['abnormality', vars.abnormality_id] });
-        },
-    });
-}
-export function useWorkersByGroup(jh_group_id) {
+export function useAbnormalityJhGroupAnalytics(params = {}, enabled = true) {
     return useQuery({
-        queryKey: ['workers-by-group', jh_group_id],
-        queryFn: async () => {
-            const workers = await api.getWorkers();
-            return workers.map((w) => ({
-                id: w.id,
-                name: w.name,
-                tpm_role: w.tpm_role || w.role || 'apprentice',
-                employee_id: w.employee_id || ''
-            }));
-        },
-    });
-}
-export function useMachinesByGroup(jh_group_id) {
-    return useQuery({
-        queryKey: ['machines-by-group', jh_group_id],
-        queryFn: async () => {
-            const machines = await api.getMachines(jh_group_id ?? undefined);
-            return machines.map((m) => ({
-                id: m.id,
-                name: m.name,
-                jh_group_id: m.jh_group_id || null
-            }));
-        },
-    });
-}
-export function useMachineSubsections(machine_id) {
-    return useQuery({
-        queryKey: ['machine-subsections', machine_id],
-        queryFn: async () => {
-            const subs = await api.getMachineSubsections(machine_id ?? undefined);
-            return subs.map((s) => ({ id: s.id, name: s.name }));
-        },
+        queryKey: ['abnormality-jh-group-analytics', params],
+        enabled,
+        retry: false,
+        staleTime: 1000 * 60,
+        queryFn: async () => api.getAbnormalityJhGroupAnalytics(params),
     });
 }

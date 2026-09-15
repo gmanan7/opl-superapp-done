@@ -6,9 +6,8 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useResetWorkerPassword } from '@/hooks/mdm';
 // Email-identity password reset, migrated from the retired /admin/users Leaders tab.
-// Admin-only at the UI here; the Edge action is admin-only + same-factory regardless
-// (the real gate). Min-8 + confirm mirrors the original complexity UX; Supabase Auth
-// enforces its own password policy server-side.
+// Admin-only at the UI here; the backend endpoint is admin-only + same-factory
+// regardless (the real gate). Min-8 + confirm is the client-side complexity check.
 export function PeoplePasswordReset({ worker, onOpenChange, }) {
     const { t } = useTranslation();
     const reset = useResetWorkerPassword();

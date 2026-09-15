@@ -55,6 +55,12 @@ export function useCreateModuleGroup() {
     });
 }
 
+export function useUpdateModuleGroup() {
+    return useOrgMutation(async ({ id, ...data }) => {
+        return api.updateModuleGroup(id, data);
+    });
+}
+
 export function useDeleteModuleGroup() {
     return useOrgMutation(async (id) => {
         return api.deleteModuleGroup(id);
@@ -64,6 +70,12 @@ export function useDeleteModuleGroup() {
 export function useCreateJhGroup() {
     return useOrgMutation(async (data) => {
         return api.createJhGroup(data);
+    });
+}
+
+export function useUpdateJhGroup() {
+    return useOrgMutation(async ({ id, ...data }) => {
+        return api.updateJhGroup(id, data);
     });
 }
 
@@ -115,6 +127,45 @@ export function useRemoveDmtMember() {
 export function useSaveApprovalRouting() {
     return useOrgMutation(async (data) => {
         return api.saveApprovalRouting(data);
+    });
+}
+
+export function useOplWorkflowStages(factoryId) {
+    return useQuery({
+        queryKey: mdmKeys.oplWorkflowStages(factoryId),
+        queryFn: () => api.getOplWorkflowStages(factoryId),
+        enabled: Boolean(factoryId),
+    });
+}
+
+export function useSaveOplWorkflowStages() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (data) => api.saveOplWorkflowStages(data),
+        onSuccess: (_result, variables) => {
+            queryClient.invalidateQueries({ queryKey: mdmKeys.oplWorkflowStages(variables?.factory_id) });
+            queryClient.invalidateQueries({ queryKey: mdmKeys.orgStructure() });
+        },
+    });
+}
+
+// Generalized version for Kaizen/Abnormality's two review phases each.
+export function useWorkflowStages(factoryId, module, phase) {
+    return useQuery({
+        queryKey: mdmKeys.workflowStages(factoryId, module, phase),
+        queryFn: () => api.getWorkflowStages(factoryId, module, phase),
+        enabled: Boolean(factoryId && module && phase),
+    });
+}
+
+export function useSaveWorkflowStages() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (data) => api.saveWorkflowStages(data),
+        onSuccess: (_result, variables) => {
+            queryClient.invalidateQueries({ queryKey: mdmKeys.workflowStages(variables?.factory_id, variables?.module, variables?.phase) });
+            queryClient.invalidateQueries({ queryKey: mdmKeys.orgStructure() });
+        },
     });
 }
 

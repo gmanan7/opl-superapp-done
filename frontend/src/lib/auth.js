@@ -2,7 +2,7 @@ import { api } from './api';
 import { RESOLVABLE_LANGS } from '../i18n';
 import { safeStorage } from './safeStorage';
 export function getLangPref(session) {
-    return session.type === 'pin' ? session.worker.lang_pref : session.lang_pref;
+    return session.lang_pref;
 }
 function resolveAuthedLang(profileLang) {
     if (profileLang && RESOLVABLE_LANGS.includes(profileLang))
@@ -33,8 +33,8 @@ export function clearSession() {
     safeStorage.removeItem(SESSION_KEY);
     safeStorage.removeItem(LOGIN_AT_KEY);
 }
-export async function loginWithEmail(emailOrEmpId, _password) {
-    const res = await api.login(emailOrEmpId);
+export async function loginWithEmail(emailOrEmpId, password) {
+    const res = await api.login(emailOrEmpId, password);
     const user = res.user;
     if (!user) {
         throw new Error('Account not found. Contact your administrator.');
@@ -47,7 +47,7 @@ export async function loginWithEmail(emailOrEmpId, _password) {
         name: user.name,
         email: user.email || emailOrEmpId,
         role: user.role || 'operator',
-        factory_id: user.factory_id ?? '00000000-0000-0000-0000-000000000001',
+        factory_id: user.factory_id ?? null,
         jh_group_id: user.jh_group_id ?? null,
         dmt_id: user.dmt_id ?? null,
         lang_pref: resolveAuthedLang(user.lang_pref),
@@ -55,20 +55,13 @@ export async function loginWithEmail(emailOrEmpId, _password) {
     saveSession(session);
     return session;
 }
-export async function loginWithPin(employeeId, _pin) {
-    return loginWithEmail(employeeId, _pin);
-}
 export function updateSessionLangPref(lang) {
     const raw = safeStorage.getItem(SESSION_KEY);
     if (!raw)
         return;
     try {
         const s = JSON.parse(raw);
-        if (s.type === 'pin' && s.worker) {
-            s.worker.lang_pref = lang;
-        } else {
-            s.lang_pref = lang;
-        }
+        s.lang_pref = lang;
         safeStorage.setItem(SESSION_KEY, JSON.stringify(s));
     }
     catch { /* ignore */ }
@@ -79,14 +72,12 @@ export async function logout() {
 export function getRole(session) {
     if (!session)
         return null;
-    if (session.type === 'email')
-        return session.role;
-    return session.role || session.worker?.tpm_role || null;
+    return session.role || null;
 }
 export function getName(session) {
     if (!session)
         return '';
-    return session.name || session.worker?.name || session.email || session.emp_id || '';
+    return session.name || session.email || session.emp_id || '';
 }
 const ROLE_ORDER = [
     'operator',
@@ -108,15 +99,6 @@ export function getSessionContext() {
     const session = loadSession();
     if (!session)
         return null;
-    if (session.type === 'pin') {
-        return {
-            worker_id: session.worker.worker_id,
-            factory_id: session.worker.factory_id,
-            jh_group_id: session.worker.jh_group_id,
-            dmt_id: session.worker.dmt_id,
-            role: session.worker.tpm_role,
-        };
-    }
     return {
         worker_id: session.worker_id,
         factory_id: session.factory_id,

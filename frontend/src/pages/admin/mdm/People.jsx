@@ -12,7 +12,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { StatusBadge, MembershipChip, ConfirmModal, PinRevealModal, SkeletonRow, EmptyState, ErrorState, RlsDeniedNotice, RosterFilterBar, DEFAULT_ROSTER_FILTERS, } from '@/components/patterns';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
-import { useWorkers, useOrgStructure, useMembershipsByWorkers, useDeactivateWorker, useReactivateWorker, useGeneratePin, WORKERS_PAGE_SIZE, MdmError, } from '@/hooks/mdm';
+import { useWorkers, useOrgStructure, useDeactivateWorker, useReactivateWorker, useGeneratePin, WORKERS_PAGE_SIZE, MdmError, } from '@/hooks/mdm';
 import { getSessionContext } from '../../../hooks/useAbnormalities';
 import { PeopleInvite } from './PeopleInvite';
 import { PeopleEdit } from './PeopleEdit';
@@ -106,8 +106,7 @@ export function People() {
     const rows = workers.data?.rows ?? [];
     const total = workers.data?.total ?? 0;
     const pageCount = Math.max(1, Math.ceil(total / WORKERS_PAGE_SIZE));
-    const memberships = useMembershipsByWorkers(rows.map((r) => r.id));
-    const additionalByWorker = memberships.data ?? new Map();
+    const additionalByWorker = new Map();
     const deactivate = useDeactivateWorker();
     const reactivate = useReactivateWorker();
     const genPin = useGeneratePin();

@@ -1,80 +1,76 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { getSessionContext, roleAtLeast } from '../lib/auth';
-export function useKaizens(filter = 'all') {
-    const ctx = getSessionContext();
-    return useQuery({
-        queryKey: ['kaizens', filter, ctx?.worker_id],
-        staleTime: 1000 * 60 * 2,
-        queryFn: async () => {
-            const data = await api.getKaizens();
-            return data;
-        },
-    });
-}
-export function useKaizen(id) {
-    return useQuery({
-        queryKey: ['kaizen', id],
-        enabled: !!id,
-        staleTime: 1000 * 60 * 2,
-        queryFn: async () => {
-            const data = await api.getKaizens();
-            const found = data.find((d) => d.id === id);
-            return found ? found : null;
-        },
-    });
-}
-export function useCreateKaizenIdea() {
+
+export function useCreateKaizenDetail() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: async (input) => {
-            return api.createKaizen(input);
+        mutationFn: async ({ title, content, category, before_image, submitted_by, status, jh_group_id }) => api.createKaizenDetail({ title, content, category, before_image, submitted_by, status, jh_group_id }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['kaizenDetails'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         },
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['kaizens'] }),
     });
 }
-export function useUpdateKaizen() {
+export function useKaizenDetails() {
+    return useQuery({
+        queryKey: ['kaizenDetails'],
+        staleTime: 1000 * 30,
+        queryFn: async () => api.getKaizenDetails(),
+    });
+}
+export function useKaizenRepositorySetting() {
+    return useQuery({
+        queryKey: ['kaizen-repository-setting'],
+        staleTime: 1000 * 60 * 5,
+        queryFn: async () => api.getKaizenRepositorySetting(),
+    });
+}
+export function useUpdateKaizenRepositorySetting() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: async ({ id, ...fields }) => {
-            return api.createKaizen({ id, ...fields });
-        },
-        onSuccess: (_d, { id }) => {
-            qc.invalidateQueries({ queryKey: ['kaizen', id] });
-            qc.invalidateQueries({ queryKey: ['kaizens'] });
-        },
+        mutationFn: async (extra_factory_ids) => api.updateKaizenRepositorySetting(extra_factory_ids),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['kaizen-repository-setting'] }),
     });
 }
-export function useSubmitKaizen() { return useMutation({ mutationFn: async () => { } }); }
-export function useApproveKaizen() { return useMutation({ mutationFn: async () => { } }); }
-export function useRejectKaizen() { return useMutation({ mutationFn: async () => { } }); }
-export function useKaizenWorkerSearch(q) {
+export function useKaizenAuditTrail(kaizenId) {
     return useQuery({
-        queryKey: ['kaizenWorkerSearch', q.trim()],
-        queryFn: async () => {
-            const names = await api.getWorkerNames();
-            return names.filter((n) => n.name.toLowerCase().includes(q.toLowerCase())).map((n) => ({
-                id: n.id,
-                name: n.name,
-                jh_group: null
-            }));
-        },
+        queryKey: ['kaizenAuditTrail', kaizenId],
+        enabled: !!kaizenId,
+        queryFn: async () => api.getKaizenAuditTrail(kaizenId),
     });
 }
-export function useTeamMemberNames(ids) {
-    const key = [...ids].sort().join(',');
+export function useKaizenAnalytics(params = {}) {
     return useQuery({
-        queryKey: ['kaizenTeamNames', key],
-        enabled: ids.length > 0,
-        queryFn: async () => {
-            const names = await api.getWorkerNames();
-            const m = {};
-            for (const n of names) {
-                if (ids.includes(n.id))
-                    m[n.id] = n.name;
-            }
-            return m;
+        queryKey: ['kaizen-analytics', params],
+        staleTime: 1000 * 60,
+        queryFn: async () => api.getKaizenAnalytics(params),
+    });
+}
+export function useKaizenAnalyticsTrend(params = {}, options = {}) {
+    return useQuery({
+        queryKey: ['kaizen-analytics-trend', params],
+        staleTime: 1000 * 60,
+        enabled: options.enabled !== false,
+        queryFn: async () => api.getKaizenAnalyticsTrend(params),
+    });
+}
+export function useReviewKaizenDetail() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: async ({ id, ...fields }) => api.reviewKaizenDetail(id, fields),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['kaizenDetails'] });
+            qc.invalidateQueries({ queryKey: ['kaizenAuditTrail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         },
     });
 }
-export { roleAtLeast };
+export function useKaizenJhGroupAnalytics(params = {}, enabled = true) {
+    return useQuery({
+        queryKey: ['kaizen-jh-group-analytics', params],
+        enabled,
+        retry: false,
+        staleTime: 1000 * 60,
+        queryFn: async () => api.getKaizenJhGroupAnalytics(params),
+    });
+}

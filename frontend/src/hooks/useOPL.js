@@ -1,29 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { getSessionContext, roleAtLeast } from '../lib/auth';
-export function useOPLs(filter = 'all') {
-    const ctx = getSessionContext();
-    return useQuery({
-        queryKey: ['opls', filter, ctx?.worker_id],
-        staleTime: 1000 * 60 * 2,
-        queryFn: async () => {
-            const data = await api.getOPLs();
-            return data;
-        },
-    });
-}
-export function useOPL(id) {
-    return useQuery({
-        queryKey: ['opl', id],
-        enabled: !!id,
-        staleTime: 1000 * 60 * 2,
-        queryFn: async () => {
-            const data = await api.getOPLs();
-            const found = data.find((d) => d.id === id);
-            return found ? found : null;
-        },
-    });
-}
+import { roleAtLeast } from '../lib/auth';
 export function useOplDetails() {
     return useQuery({
         queryKey: ['opl-details'],
@@ -32,6 +9,63 @@ export function useOplDetails() {
             const data = await api.getOplDetails();
             return data;
         },
+    });
+}
+export function useOplJhGroupAnalytics(params = {}, enabled = true) {
+    return useQuery({
+        queryKey: ['opl-jh-group-analytics', params],
+        enabled,
+        retry: false,
+        staleTime: 1000 * 60,
+        queryFn: async () => api.getOplJhGroupAnalytics(params),
+    });
+}
+export function useOplTrainingSchedules(enabled = true) {
+    return useQuery({
+        queryKey: ['opl-training-schedules'],
+        enabled,
+        staleTime: 1000 * 30,
+        retry: false,
+        queryFn: async () => api.getOplTrainingSchedules(),
+    });
+}
+function useTrainingScheduleMutation(fn) {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: fn,
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['opl-training-schedules'] });
+            qc.invalidateQueries({ queryKey: ['opl-training-assignments'] });
+        },
+    });
+}
+export function useCreateOplTrainingSchedule() {
+    return useTrainingScheduleMutation((data) => api.createOplTrainingSchedule(data));
+}
+export function useUpdateOplTrainingSchedule() {
+    return useTrainingScheduleMutation(({ id, ...data }) => api.updateOplTrainingSchedule(id, data));
+}
+export function useDeleteOplTrainingSchedule() {
+    return useTrainingScheduleMutation((id) => api.deleteOplTrainingSchedule(id));
+}
+export function useRunOplTrainingSchedule() {
+    return useTrainingScheduleMutation((id) => api.runOplTrainingSchedule(id));
+}
+
+export function useOplRepositorySetting() {
+    return useQuery({
+        queryKey: ['opl-repository-setting'],
+        staleTime: 1000 * 60 * 5,
+        queryFn: async () => api.getOplRepositorySetting(),
+    });
+}
+export function useUpdateOplRepositorySetting() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: async (extra_factory_ids) => api.updateOplRepositorySetting(extra_factory_ids),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['opl-repository-setting'] });
+        }
     });
 }
 export function useCreateOplDetail() {
@@ -43,6 +77,7 @@ export function useCreateOplDetail() {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -55,6 +90,7 @@ export function useUpdateOplDetail() {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -77,29 +113,6 @@ export function useCreateOplAuditTrail() {
         }
     });
 }
-export function useCreateOPL() {
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: async (input) => {
-            return api.createOPL(input);
-        },
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['opls'] });
-        }
-    });
-}
-export function useUpdateOPL() {
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: async ({ id, ...fields }) => {
-            return api.createOPL({ id, ...fields });
-        },
-        onSuccess: (_d, { id }) => {
-            qc.invalidateQueries({ queryKey: ['opl', id] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
-        },
-    });
-}
 export function useSubmitOPL() {
     const qc = useQueryClient();
     return useMutation({
@@ -113,8 +126,8 @@ export function useSubmitOPL() {
         },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -122,20 +135,22 @@ export function useSubmitOPL() {
 export function useJhAcceptOPL() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: async ({ id, classification, is_star, comments, performed_by }) => {
+        mutationFn: async ({ id, classification, is_star, comments, performed_by, edits }) => {
             return api.updateOplDetail(id, {
                 status: 'approved',
                 classification,
                 is_star: is_star !== undefined ? Boolean(is_star) : false,
                 action: 'jh_accepted',
+                // Optional reviewer edits applied at approval time — only send keys that were provided.
+                ...(edits || {}),
                 comments: comments || (is_star ? 'Approved as Critical OPL by JH Group Lead' : 'Approved by JH Group Lead'),
                 performed_by
             });
         },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -154,8 +169,8 @@ export function useJhRejectOPL() {
         },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -174,8 +189,8 @@ export function useBeAcceptOPL() {
         },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -194,8 +209,8 @@ export function useBeRejectOPL() {
         },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -213,8 +228,8 @@ export function useSetStarOPL() {
         },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
@@ -232,24 +247,69 @@ export function useUpdateOplClassification() {
         },
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
             qc.invalidateQueries({ queryKey: ['opl-audit-trail'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
 
-export function useDeleteOPL() {
+export function usePushOplTraining() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: async ({ id }) => {
-            return api.updateOplDetail(id, { status: 'deleted' });
+        mutationFn: async (data) => {
+            return api.pushOplTraining(data);
         },
         onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['opl-details'] });
-            qc.invalidateQueries({ queryKey: ['opls'] });
+            qc.invalidateQueries({ queryKey: ['opl-training-assignments'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
         }
     });
 }
-export const useApproveOPL = useJhAcceptOPL;
-export const useRejectOPL = useJhRejectOPL;
+
+export function useOplTrainingAssignments(params = {}, options = {}) {
+    return useQuery({
+        queryKey: ['opl-training-assignments', params],
+        staleTime: 1000 * 30,
+        refetchInterval: 1000 * 45,
+        enabled: options.enabled !== false,
+        queryFn: async () => {
+            return api.getOplTrainingAssignments(params);
+        }
+    });
+}
+
+export function useCompleteOplTrainingAssignment() {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: async (id) => {
+            return api.completeOplTrainingAssignment(id);
+        },
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['opl-training-assignments'] });
+            qc.invalidateQueries({ queryKey: ['notifications'] });
+        }
+    });
+}
+
+export function useOplAnalytics(params = {}) {
+    return useQuery({
+        queryKey: ['opl-analytics', params],
+        staleTime: 1000 * 60,
+        queryFn: async () => {
+            return api.getOplAnalytics(params);
+        }
+    });
+}
+
+export function useOplAnalyticsTrend(params = {}, options = {}) {
+    return useQuery({
+        queryKey: ['opl-analytics-trend', params],
+        staleTime: 1000 * 60,
+        enabled: options.enabled !== false,
+        queryFn: async () => {
+            return api.getOplAnalyticsTrend(params);
+        }
+    });
+}
+
 export { roleAtLeast };

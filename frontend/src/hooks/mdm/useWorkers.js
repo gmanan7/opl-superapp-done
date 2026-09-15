@@ -9,7 +9,7 @@ export function useWorkers(filters = {}) {
             const data = await api.getWorkers();
             const rows = data.map((w) => ({
                 id: w.id,
-                factory_id: w.factory_id || '00000000-0000-0000-0000-000000000001',
+                factory_id: w.factory_id || null,
                 employee_id: w.employee_id || '',
                 name: w.name,
                 role: w.role || w.tpm_role || 'apprentice',

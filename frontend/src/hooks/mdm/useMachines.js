@@ -5,7 +5,7 @@ export function useMachines(filters = {}) {
     return useQuery({
         queryKey: mdmKeys.machines(filters),
         queryFn: async () => {
-            const data = await api.getMachines(filters.jhGroupId);
+            const data = await api.getMachines(filters.jhGroupId, filters.includeInactive);
             return data;
         },
     });
@@ -25,12 +25,12 @@ export function useCreateMachine() {
     });
 }
 export function useUpdateMachine() {
-    return useMachineMutation(async (input) => {
-        return api.createMachine(input);
+    return useMachineMutation(async ({ id, ...data }) => {
+        return api.updateMachine(id, data);
     });
 }
 export function useSetMachineActive() {
-    return useMachineMutation(async (input) => {
-        return api.createMachine(input);
+    return useMachineMutation(async ({ id, is_active }) => {
+        return api.setMachineActive(id, is_active);
     });
 }

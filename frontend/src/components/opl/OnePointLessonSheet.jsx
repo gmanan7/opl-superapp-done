@@ -1,20 +1,55 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Check, Printer, Smartphone, FileText, Calendar, User, Building2, Users, CheckCircle2 } from 'lucide-react';
 
 export function OnePointLessonSheet({
   lesson,
   onClose,
   isCompleted = false,
+  canComplete = true,
   onMarkCompleted = () => {},
   onLessonOpened = () => {}
 }) {
   const [viewMode, setViewMode] = useState('summary'); // 'summary' or 'sheet'
+  const [minTimeElapsed, setMinTimeElapsed] = useState(false);
+  const [scrolledToEnd, setScrolledToEnd] = useState(false);
+  const bodyRef = useRef(null);
+
+  // Gate: the reader must both stay on the lesson for at least 4 seconds AND scroll
+  // to the bottom. Lessons too short to scroll auto-satisfy the scroll part so a
+  // phone user is never left with no visible button.
+  const hasReadToEnd = minTimeElapsed && scrolledToEnd;
 
   useEffect(() => {
     if (lesson?.opl_id) {
       onLessonOpened(lesson.opl_id);
     }
   }, [lesson?.opl_id, onLessonOpened]);
+
+  // Both the Close and Complete buttons only appear once the reader has spent at
+  // least 5 seconds on the lesson AND scrolled to the bottom of its body. A body
+  // that isn't tall enough to scroll counts as "scrolled to the end" immediately.
+  useEffect(() => {
+    setMinTimeElapsed(false);
+    setScrolledToEnd(false);
+    const el = bodyRef.current;
+    // ~48px tolerance: mobile browsers report fractional scroll positions and the
+    // address bar sliding in/out shifts the measured height.
+    const checkScroll = () => {
+      if (!el) return;
+      const notScrollable = el.scrollHeight - el.clientHeight <= 48;
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 48;
+      if (notScrollable || atBottom) setScrolledToEnd(true);
+    };
+    // Measure after the browser has laid the body out.
+    const raf = requestAnimationFrame(checkScroll);
+    el?.addEventListener('scroll', checkScroll, { passive: true });
+    const timer = setTimeout(() => setMinTimeElapsed(true), 4000);
+    return () => {
+      cancelAnimationFrame(raf);
+      el?.removeEventListener('scroll', checkScroll);
+      clearTimeout(timer);
+    };
+  }, [lesson?.opl_id, viewMode]);
 
   if (!lesson) return null;
 
@@ -33,13 +68,13 @@ export function OnePointLessonSheet({
         
         {/* Modal Top Action Bar (Non-printable) */}
         <div className="print:hidden flex items-center justify-between gap-1.5 bg-slate-900 px-3 py-2 text-white border-b border-slate-800 shrink-0 z-20">
-          <div className="flex items-center gap-1.5 min-w-0 flex-1 pr-1">
-            <span className="text-3xs font-bold bg-brand-strong px-1.5 py-0.5 rounded text-white tracking-wider shrink-0">
+          <div className="flex items-center gap-1.5 min-w-0 shrink-0 pr-1">
+            <span className="text-2xs font-bold bg-brand-strong px-1.5 py-0.5 rounded text-white tracking-wider shrink-0">
               OPL
             </span>
-            <span className="text-2xs sm:text-xs text-slate-200 font-medium truncate">
-              {lesson.title}
-            </span>
+            {lesson.opl_id != null && (
+              <span className="text-2xs text-slate-400 font-mono shrink-0">#{lesson.opl_id}</span>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
@@ -48,7 +83,7 @@ export function OnePointLessonSheet({
               <button
                 type="button"
                 onClick={() => setViewMode('summary')}
-                className={`flex items-center gap-1 px-2 py-0.5 rounded text-3xs sm:text-2xs font-medium transition-all ${
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-2xs sm:text-2xs font-medium transition-all ${
                   viewMode === 'summary'
                     ? 'bg-brand-strong text-white shadow-2xs font-semibold'
                     : 'text-slate-300 hover:text-white'
@@ -62,7 +97,7 @@ export function OnePointLessonSheet({
               <button
                 type="button"
                 onClick={() => setViewMode('sheet')}
-                className={`flex items-center gap-1 px-2 py-0.5 rounded text-3xs sm:text-2xs font-medium transition-all ${
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-2xs sm:text-2xs font-medium transition-all ${
                   viewMode === 'sheet'
                     ? 'bg-brand-strong text-white shadow-2xs font-semibold'
                     : 'text-slate-300 hover:text-white'
@@ -78,7 +113,7 @@ export function OnePointLessonSheet({
               <button
                 type="button"
                 onClick={handlePrint}
-                className="hidden sm:inline-flex items-center gap-1 rounded-md bg-blue-600 hover:bg-blue-700 px-2 py-0.5 text-3xs sm:text-2xs font-medium text-white transition-colors"
+                className="hidden sm:inline-flex items-center gap-1 rounded-md bg-blue-600 hover:bg-blue-700 px-2 py-0.5 text-2xs sm:text-2xs font-medium text-white transition-colors"
                 title="Print OPL Sheet"
               >
                 <Printer size={12} />
@@ -89,9 +124,10 @@ export function OnePointLessonSheet({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+              disabled={!hasReadToEnd}
+              className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               aria-label="Close modal"
-              title="Close Modal"
+              title={hasReadToEnd ? 'Close Modal' : 'Read to the end of the lesson to close'}
             >
               <X size={16} />
             </button>
@@ -99,7 +135,7 @@ export function OnePointLessonSheet({
         </div>
 
         {/* Modal Scrollable Body */}
-        <div className="p-3 sm:p-6 overflow-y-auto overscroll-contain flex-1 min-h-0 bg-slate-50 font-sans text-xs sm:text-sm leading-relaxed">
+        <div ref={bodyRef} className="p-3 sm:p-6 overflow-y-auto overscroll-contain flex-1 min-h-0 bg-slate-50 font-sans text-xs sm:text-sm leading-relaxed">
           
           {/* ========================================================= */}
           {/* SUMMARY VIEW (Default view mode) */}
@@ -111,7 +147,7 @@ export function OnePointLessonSheet({
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
-                    {lesson.classification || 'Basic Knowledge'}
+                    {lesson.classification || 'Basic Condition'}
                   </span>
                   {isCompleted ? (
                     <span className="text-2xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md flex items-center gap-1">
@@ -127,7 +163,7 @@ export function OnePointLessonSheet({
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-2xs text-slate-600 pt-2 border-t border-slate-100">
                   <div className="flex items-center gap-1.5">
                     <Building2 size={13} className="text-slate-400" />
-                    <span>Plant: <strong className="text-slate-800">{lesson.plant_name || 'TVT'}</strong></span>
+                    <span>Plant: <strong className="text-slate-800">{lesson.plant_name || lesson.plant_code || '—'}</strong></span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Users size={13} className="text-slate-400" />
@@ -169,7 +205,7 @@ export function OnePointLessonSheet({
                         Before Condition
                       </span>
                     </div>
-                    <span className="text-3xs font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded uppercase">
+                    <span className="text-2xs font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded uppercase">
                       Problem
                     </span>
                   </div>
@@ -211,7 +247,7 @@ export function OnePointLessonSheet({
                         After Condition
                       </span>
                     </div>
-                    <span className="text-3xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded uppercase">
+                    <span className="text-2xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded uppercase">
                       Standard
                     </span>
                   </div>
@@ -270,7 +306,7 @@ export function OnePointLessonSheet({
 
                 {/* Right Logo */}
                 <div className="flex items-center">
-                  <div className="bg-slate-900 text-white font-bold text-3xs sm:text-2xs p-1.5 rounded flex items-center gap-1">
+                  <div className="bg-slate-900 text-white font-bold text-2xs sm:text-2xs p-1.5 rounded flex items-center gap-1">
                     <div className="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[10px] border-b-blue-400" />
                     <span>Enduring Value</span>
                   </div>
@@ -302,13 +338,13 @@ export function OnePointLessonSheet({
                       Classification
                     </td>
                     <td className="p-2 font-semibold border-r border-black border-b border-black" colSpan={3}>
-                      {lesson.classification || 'Basic Knowledge'}
+                      {lesson.classification || 'Basic Condition'}
                     </td>
                     <td className="font-bold p-2 bg-slate-50 border-r border-black border-b border-black text-center">
                       Plant
                     </td>
                     <td className="p-2 text-center font-semibold border-b border-black">
-                      {lesson.plant_name || 'TVT'}
+                      {lesson.plant_name || lesson.plant_code || '—'}
                     </td>
                   </tr>
 
@@ -490,6 +526,16 @@ export function OnePointLessonSheet({
               <span className="text-emerald-400 font-bold flex items-center gap-1 bg-emerald-950/80 border border-emerald-800 px-2.5 py-1 rounded-md">
                 <CheckCircle2 size={14} /> Training Completed
               </span>
+            ) : !canComplete ? (
+              <span className="text-slate-300 font-medium">
+                This lesson has not been assigned to you as training.
+              </span>
+            ) : !hasReadToEnd ? (
+              <span className="text-amber-400 font-medium">
+                {!minTimeElapsed
+                  ? 'Please read the lesson — the buttons unlock shortly'
+                  : 'Scroll to the end of the lesson to unlock'}
+              </span>
             ) : (
               <span className="text-slate-300 font-medium">
                 Active Lesson: <strong className="text-white">{lesson.title}</strong>
@@ -498,7 +544,7 @@ export function OnePointLessonSheet({
           </div>
 
           <div className="flex items-center gap-2">
-            {!isCompleted && (
+            {!isCompleted && canComplete && hasReadToEnd && (
               <button
                 type="button"
                 onClick={() => {
@@ -512,14 +558,16 @@ export function OnePointLessonSheet({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 hover:text-white font-bold text-xs border border-slate-600 transition-colors"
-            >
-              <X size={16} />
-              <span>Close Lesson</span>
-            </button>
+            {hasReadToEnd && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 hover:text-white font-bold text-xs border border-slate-600 transition-colors"
+              >
+                <X size={16} />
+                <span>Close Lesson</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

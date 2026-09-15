@@ -30,7 +30,7 @@
   --popover-foreground: 20 6% 15%;    /* ink             #292524 */
 
   /* ── Brand / primary ────────────────────────────────────────────────── */
-  --primary: 26 90% 37%;              /* brand.DEFAULT   #B45309 */
+  --primary: 221 83% 53%;             /* brand.DEFAULT   #2563EB */
   --primary-foreground: 0 0% 100%;    /* brand.on        #FFFFFF */
 
   /* ── Secondary & muted (warm-neutral) ───────────────────────────────── */
@@ -56,13 +56,13 @@
   /* ── Lines & focus ──────────────────────────────────────────────────── */
   --border: 20 6% 90%;                /* line.DEFAULT    #E7E5E4 */
   --input: 20 6% 90%;                 /* line.DEFAULT    #E7E5E4 */
-  --ring: 26 90% 37%;                 /* brand.DEFAULT   #B45309 */
+  --ring: 221 83% 53%;                /* brand.DEFAULT   #2563EB */
 
   /* ── Radius (shadcn derives sm/md/lg from this) ─────────────────────── */
   --radius: 0.5rem;
 
   /* ── Charts (categorical, color-blind-spread) ───────────────────────── */
-  --chart-1: 32 95% 44%;              /* brand.bright    #D97706 */
+  --chart-1: 217 91% 60%;             /* brand.bright    #3B82F6 */
   --chart-2: 224 76% 48%;             /* info            #1D4ED8 */
   --chart-3: 163 90% 24%;             /* success         #047857 */
   --chart-4: 35 92% 33%;              /* warning         #A16207 */
@@ -72,12 +72,12 @@
   --sidebar: 30 13% 9%;                       /* surface-inverse        #1A1714 */
   --sidebar-background: 30 13% 9%;            /* alias (older shadcn name) */
   --sidebar-foreground: 60 9% 98%;            /* ink-inverse            #FAFAF9 */
-  --sidebar-primary: 32 95% 44%;              /* brand.bright           #D97706 */
+  --sidebar-primary: 217 91% 60%;             /* brand.bright           #3B82F6 */
   --sidebar-primary-foreground: 30 13% 9%;    /* surface-inverse        #1A1714 */
   --sidebar-accent: 27 12% 14%;               /* surface-inverse-hover  #292420 */
   --sidebar-accent-foreground: 60 9% 98%;     /* ink-inverse            #FAFAF9 */
   --sidebar-border: 27 12% 14%;               /* surface-inverse-hover  #292420 */
-  --sidebar-ring: 32 95% 44%;                 /* brand.bright           #D97706 */
+  --sidebar-ring: 217 91% 60%;                /* brand.bright           #3B82F6 */
 }
 
 /* ============================================================================
@@ -99,7 +99,7 @@
   --card-foreground: 60 9% 98%;
   --popover: 27 12% 14%;
   --popover-foreground: 60 9% 98%;
-  --primary: 32 95% 44%;             /* brand.bright on dark   #D97706 */
+  --primary: 217 91% 60%;            /* brand.bright on dark   #3B82F6 */
   --primary-foreground: 30 13% 9%;
   --secondary: 27 12% 14%;
   --secondary-foreground: 60 9% 98%;
@@ -109,7 +109,7 @@
   --accent-foreground: 60 9% 98%;
   --border: 27 12% 14%;
   --input: 27 12% 14%;
-  --ring: 32 95% 44%;
+  --ring: 217 91% 60%;
 }
 
 /* ============================================================================

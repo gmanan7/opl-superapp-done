@@ -12,8 +12,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, } from '@/components/ui/select';
-import { MembershipChip, RlsDeniedNotice } from '@/components/patterns';
-import { MdmError, useUpdateWorker, useWorkerMemberships, useAddMembership, useRemoveMembership, useOrgStructure, useGrantUserPlantAccess, useRevokeUserPlantAccess } from '@/hooks/mdm';
+import { RlsDeniedNotice } from '@/components/patterns';
+import { MdmError, useUpdateWorker, useOrgStructure, useGrantUserPlantAccess, useRevokeUserPlantAccess } from '@/hooks/mdm';
 import { getSessionContext } from '../../../hooks/useAbnormalities';
 const ROLE_OPTIONS = [
   'operator', 'jh_lead', 'module_lead', 'admin_5s', 'area_champion_5s',
@@ -32,8 +32,6 @@ export function PeopleEdit({ worker, onOpenChange, jhGroups, dmts }) {
     const [apprenticeType, setApprenticeType] = useState(NONE);
     const [langPref, setLangPref] = useState('en');
     const [formError, setFormError] = useState(null);
-    const [addKind, setAddKind] = useState('jh');
-    const [addTarget, setAddTarget] = useState('');
     useEffect(() => {
         if (worker) {
             setName(worker.name);
@@ -43,14 +41,9 @@ export function PeopleEdit({ worker, onOpenChange, jhGroups, dmts }) {
             setApprenticeType(worker.apprentice_type ?? NONE);
             setLangPref((worker.lang_pref === 'ta' ? 'en' : worker.lang_pref) ?? 'en');
             setFormError(null);
-            setAddTarget('');
         }
     }, [worker]);
     const update = useUpdateWorker();
-    const memberships = useWorkerMemberships(worker?.id);
-    const addMembership = useAddMembership();
-    const removeMembership = useRemoveMembership();
-    
     const org = useOrgStructure();
     const grantPlantAccess = useGrantUserPlantAccess();
     const revokePlantAccess = useRevokeUserPlantAccess();
@@ -99,17 +92,6 @@ export function PeopleEdit({ worker, onOpenChange, jhGroups, dmts }) {
                 toast.success(t('people.edit.saved', { name: name.trim() }));
                 onOpenChange(false);
             },
-            onError: (e) => setFormError(e instanceof MdmError ? t(`mdm.errors.${e.code}`) : t('mdm.errors.unknown')),
-        });
-    }
-    function addNewMembership() {
-        if (!worker || !addTarget)
-            return;
-        const input = addKind === 'jh'
-            ? { workerId: worker.id, jhGroupId: addTarget }
-            : { workerId: worker.id, dmtId: addTarget };
-        addMembership.mutate(input, {
-            onSuccess: () => setAddTarget(''),
             onError: (e) => setFormError(e instanceof MdmError ? t(`mdm.errors.${e.code}`) : t('mdm.errors.unknown')),
         });
     }
@@ -185,47 +167,6 @@ export function PeopleEdit({ worker, onOpenChange, jhGroups, dmts }) {
                   </SelectContent>
                 </Select>
               </label>
-
-              {/* ── Additional memberships (D-013: participation, not authority) ── */}
-              <section className="space-y-2 border-t border-line pt-3">
-                <h3 className="text-sm font-semibold text-ink-strong">{t('people.edit.memberships')}</h3>
-                <p className="text-2xs text-ink-subtle">{t('people.edit.membershipsNote')}</p>
-                {(memberships.data ?? []).length === 0 && (<p className="text-sm text-ink-muted">{t('people.edit.noMemberships')}</p>)}
-                <ul className="space-y-1.5">
-                  {(memberships.data ?? []).map((m) => (<li key={m.id} className="flex items-center justify-between gap-2">
-                      <MembershipChip path={[m.jh_group?.name, m.dmt?.name].filter(Boolean)}/>
-                      <Button variant="ghost" size="sm" aria-label={t('people.edit.removeMembership')} disabled={removeMembership.isPending} onClick={() => removeMembership.mutate({ membershipId: m.id, workerId: worker.id }, {
-                    onError: (e) => setFormError(e instanceof MdmError ? t(`mdm.errors.${e.code}`) : t('mdm.errors.unknown')),
-                })}>
-                        <X size={14} aria-hidden/>
-                      </Button>
-                    </li>))}
-                </ul>
-                <div className="flex items-end gap-2">
-                  <label className="text-2xs text-ink-muted">
-                    {t('people.edit.addKind')}
-                    <Select value={addKind} onValueChange={(v) => { setAddKind(v); setAddTarget(''); }}>
-                      <SelectTrigger className="mt-1 w-28"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="jh">{t('mdm.org.jhGroup')}</SelectItem>
-                        <SelectItem value="dmt">{t('mdm.org.dmt')}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="flex-1 text-2xs text-ink-muted">
-                    {t('people.edit.addTarget')}
-                    <Select value={addTarget || undefined} onValueChange={setAddTarget}>
-                      <SelectTrigger className="mt-1 w-full"><SelectValue placeholder="—"/></SelectTrigger>
-                      <SelectContent>
-                        {(addKind === 'jh' ? jhGroups ?? [] : dmts ?? []).map((o) => (<SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <Button variant="secondary" size="sm" disabled={!addTarget || addMembership.isPending} onClick={addNewMembership}>
-                    {t('people.edit.addMembership')}
-                  </Button>
-                </div>
-              </section>
 
               {/* ── User Plant Access Management ── */}
               <section className="space-y-2 border-t border-line pt-3">

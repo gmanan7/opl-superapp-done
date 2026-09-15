@@ -24,6 +24,8 @@ export const mdmKeys = {
     all: ['mdm'],
     modules: () => [...mdmKeys.all, 'modules'],
     orgStructure: () => [...mdmKeys.all, 'org'],
+    oplWorkflowStages: (factoryId) => [...mdmKeys.all, 'oplWorkflowStages', factoryId ?? null],
+    workflowStages: (factoryId, module, phase) => [...mdmKeys.all, 'workflowStages', factoryId ?? null, module, phase],
     machines: (f = {}) => [...mdmKeys.all, 'machines', normalizeFilters(f)],
     workers: (f = {}) => [...mdmKeys.all, 'workers', normalizeFilters(f)],
     memberships: (workerId) => [...mdmKeys.all, 'memberships', workerId],
@@ -37,7 +39,7 @@ export class MdmError extends Error {
         this.code = code;
     }
 }
-// Maps a PostgREST/Supabase error to a clean coded error. Raw DB detail never
+// Maps a backend/database error to a clean coded error. Raw DB detail never
 // crosses this boundary (it may carry schema/constraint internals).
 export function toMdmError(err) {
     if (err instanceof MdmError)
@@ -52,9 +54,7 @@ export function toMdmError(err) {
         return new MdmError('check_violation');
     if (pgCode === '42501' || e?.status === 401 || e?.status === 403)
         return new MdmError('denied');
-    if (pgCode === 'PGRST116')
-        return new MdmError('not_found');
-    // Edge-function denials arrive as plain Error messages (manageUserCall).
+    // The backend returns denials as plain Error messages with these prefixes.
     if (/^(Forbidden|Admin only|Unauthorized|User is outside your management scope)/i.test(e?.message ?? '')) {
         return new MdmError('denied');
     }
@@ -69,7 +69,7 @@ export function requireRows(rows) {
         throw new MdmError('denied');
     return rows;
 }
-// PostgREST .or() syntax breaks on commas/parens; ilike wildcards are harmless.
+// Strip commas/parens from a free-text search term before it reaches the backend.
 export function sanitizeSearchTerm(term) {
     return term.replace(/[,()]/g, '').trim();
 }
