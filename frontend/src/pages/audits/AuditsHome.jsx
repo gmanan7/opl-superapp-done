@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { ClipboardCheck, Download, FileText, Plus, Trash2, Users, X } from 'lucide-react';
+import { ClipboardCheck, Download, FileText, Plus, Trash2, Upload, Users, X } from 'lucide-react';
+import { downloadAuditTemplateSheet, parseAuditFile, hasBlockingErrors, toFormState } from '../../lib/auditTemplateExcel';
 import { toast } from 'sonner';
 import { getSessionContext, roleAtLeast } from '../../lib/auth';
 import { api } from '../../lib/api';
@@ -13,13 +14,13 @@ import {
   useAddAuditTemplateCategory, useUpdateAuditTemplateCategory,
   useAuditSchedules, useCreateAuditSchedule, useUpdateAuditSchedule, useDeleteAuditSchedule,
   useAddAuditScheduleAuditor, useCopyAuditScheduleAuditors, useRemoveAuditScheduleAuditor,
-  useAuditSubmissions, useStartAuditSubmission, useAuditScores,
+  useAuditSubmissions, useStartAuditSubmission,
   useAuditOccurrences, useCloseAuditOccurrence,
   useMyAuditAdminStatus, useAuditTemplateAdmins, useAddAuditTemplateAdmin, useRemoveAuditTemplateAdmin,
   useAuditGlobalAdmins, useAddAuditGlobalAdmin, useRemoveAuditGlobalAdmin,
   useAuditChangeRequests, useReviewAuditChangeRequest, useAuditAuditTrail,
 } from '../../hooks/useAudits';
-import { StatusBadge, EmptyState, WorkerPicker } from '@/components/patterns';
+import { StatusBadge, EmptyState, WorkerPicker, ListPager } from '@/components/patterns';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -78,6 +79,18 @@ function downloadTemplateQuestionnaire(template) {
   XLSX.writeFile(workbook, `${safeName}.xlsx`);
 }
 
+// Client-side paging for a list: returns the current slice plus props for the shared ListPager.
+function usePaged(items, defaultSize = 5) {
+  const [page, setPage] = useState(0);
+  const [size, setSize] = useState(defaultSize);
+  const pageCount = Math.max(1, Math.ceil(items.length / size));
+  const p = Math.min(page, pageCount - 1);
+  return {
+    slice: items.slice(p * size, p * size + size),
+    pager: { total: items.length, page: p, pageCount, pageSize: size, pageSizeOptions: [5, 10, 20], onPage: setPage, onPageSize: (n) => { setSize(n); setPage(0); } },
+  };
+}
+
 export function AuditsHome() {
   const navigate = useNavigate();
   const ctx = getSessionContext();
@@ -101,6 +114,8 @@ export function AuditsHome() {
   const todayStr = new Date().toLocaleDateString('en-CA'); // 'YYYY-MM-DD' in local time
   const myCompleted = submissions.filter((s) => s.status === 'submitted' && s.is_mine);
   const myScheduleList = schedules.filter((s) => s.is_my_audit);
+  const assignedPaged = usePaged(myScheduleList);
+  const completedPaged = usePaged(myCompleted);
 
   async function handleStart(scheduleId) {
     try {
@@ -125,7 +140,6 @@ export function AuditsHome() {
         {[
           { key: 'my', label: 'My Audits', short: 'Mine', show: true },
           { key: 'all', label: 'All Audits', short: 'All', show: isFullAuditAdmin },
-          { key: 'scores', label: 'Scores', short: 'Scores', show: isFullAuditAdmin },
           { key: 'configure', label: 'Configure', short: 'Config', show: isAdmin },
           { key: 'trail', label: 'Audit Trail', short: 'Trail', show: isAdmin },
         ].filter((t) => t.show).map((t) => (
@@ -147,33 +161,52 @@ export function AuditsHome() {
             {myScheduleList.length === 0 ? (
               <EmptyState title="No audits assigned" body="You'll see an audit here once an Audit Admin adds you as an auditor." />
             ) : (
-              <div className="space-y-2">
-                {myScheduleList.map((s) => {
-                  const draftId = s.open_submission_id;
-                  const doneId = s.my_current_submission_id;
-                  const canStartNow = !draftId && !doneId && s.current_occurrence && s.current_occurrence <= todayStr;
-                  return (
-                    <div key={s.id} className="rounded-lg border border-slate-200 bg-white p-3 flex items-center justify-between gap-3">
-                      <div>
+              <>
+                <div className="space-y-2">
+                  {assignedPaged.slice.map((s) => {
+                    const draftId = s.open_submission_id;
+                    const doneId = s.my_current_submission_id;
+                    const canStartNow = !draftId && !doneId && s.current_occurrence && s.current_occurrence <= todayStr;
+                    const info = (
+                      <div className="min-w-0">
                         <div className="font-semibold text-sm text-slate-900">{s.template_name} · {s.zone_name}</div>
                         <div className="text-xs text-slate-500">
                           {describeRecurrence(s)}
                           {s.current_occurrence ? ` · this one: ${s.current_occurrence}` : ''}
                         </div>
                       </div>
-                      {draftId ? (
-                        <Button size="sm" variant="outline" onClick={() => navigate(`/audits/${draftId}`)}>Resume Draft</Button>
-                      ) : doneId ? (
-                        <button onClick={() => navigate(`/audits/${doneId}`)} className="text-xs text-emerald-600 font-medium shrink-0 hover:underline">✓ Submitted — view / others pending</button>
-                      ) : canStartNow ? (
-                        <Button size="sm" onClick={() => handleStart(s.id)} disabled={startSubmission.isPending}>Start</Button>
-                      ) : (
-                        <span className="text-xs text-slate-400 shrink-0">Scheduled for {s.next_occurrence || s.current_occurrence}</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                    const pill = 'shrink-0 rounded-full px-3 py-1 text-xs font-semibold';
+                    if (draftId) {
+                      return (
+                        <button key={s.id} type="button" onClick={() => navigate(`/audits/${draftId}`)} className="w-full text-left rounded-lg border border-slate-200 bg-white p-3 flex items-center justify-between gap-3 hover:bg-slate-50">
+                          {info}<span className={`${pill} bg-amber-100 text-amber-800`}>Resume draft</span>
+                        </button>
+                      );
+                    }
+                    if (doneId) {
+                      return (
+                        <button key={s.id} type="button" onClick={() => navigate(`/audits/${doneId}`)} className="w-full text-left rounded-lg border border-slate-200 bg-white p-3 flex items-center justify-between gap-3 hover:bg-slate-50">
+                          {info}<span className={`${pill} bg-emerald-50 text-emerald-700`}>✓ Submitted — view</span>
+                        </button>
+                      );
+                    }
+                    if (canStartNow) {
+                      return (
+                        <button key={s.id} type="button" onClick={() => handleStart(s.id)} disabled={startSubmission.isPending} className="w-full text-left rounded-lg border border-slate-200 bg-white p-3 flex items-center justify-between gap-3 hover:bg-slate-50 disabled:opacity-60">
+                          {info}<span className={`${pill} bg-primary text-white`}>Start</span>
+                        </button>
+                      );
+                    }
+                    return (
+                      <div key={s.id} className="rounded-lg border border-slate-200 bg-white p-3 flex items-center justify-between gap-3">
+                        {info}<span className="text-xs text-slate-400 shrink-0">Scheduled for {s.next_occurrence || s.current_occurrence}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <ListPager {...assignedPaged.pager} noun="audits" />
+              </>
             )}
           </section>
 
@@ -182,8 +215,9 @@ export function AuditsHome() {
             {subsLoading ? null : myCompleted.length === 0 ? (
               <EmptyState title="No completed audits yet" body="Submitted audits will show up here with their score." />
             ) : (
+              <>
               <div className="space-y-2">
-                {myCompleted.map((s) => (
+                {completedPaged.slice.map((s) => (
                   <button key={s.id} onClick={() => navigate(`/audits/${s.id}`)} className="w-full text-left rounded-lg border border-slate-200 bg-white p-3 flex items-center justify-between gap-3 hover:bg-slate-50">
                     <div>
                       <div className="font-semibold text-sm text-slate-900">{s.template_name} · {s.zone_name}</div>
@@ -201,6 +235,8 @@ export function AuditsHome() {
                   </button>
                 ))}
               </div>
+              <ListPager {...completedPaged.pager} noun="audits" />
+              </>
             )}
           </section>
         </div>
@@ -208,7 +244,6 @@ export function AuditsHome() {
 
       {tab === 'all' && isFullAuditAdmin && <AuditBoard schedules={schedules} navigate={navigate} todayStr={todayStr} />}
 
-      {tab === 'scores' && isFullAuditAdmin && <AuditScoresTab navigate={navigate} />}
 
       {tab === 'trail' && isAdmin && <AuditTrailTab />}
 
@@ -228,29 +263,17 @@ export function AuditsHome() {
 // the occurrence stays "In progress" until everyone submits (or it's force-closed).
 // Each All-Audits column shows 5 cards at a time with its own pager, so a plant with a long
 // history doesn't produce three endless scrolling lists.
-const BOARD_PAGE = 5;
 function PagedColumn({ title, items, empty, render }) {
-  const [page, setPage] = useState(0);
-  const pages = Math.max(1, Math.ceil(items.length / BOARD_PAGE));
-  const p = Math.min(page, pages - 1);
-  const slice = items.slice(p * BOARD_PAGE, p * BOARD_PAGE + BOARD_PAGE);
+  const { slice, pager } = usePaged(items);
   return (
-    <section className="space-y-2">
+    <section className="space-y-2 min-w-0">
       <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">
         {title} <span className="text-slate-400">({items.length})</span>
       </h3>
       <div className="space-y-2">
         {items.length === 0 ? <p className="text-xs text-slate-400">{empty}</p> : slice.map(render)}
       </div>
-      {items.length > BOARD_PAGE && (
-        <div className="flex items-center justify-between pt-1 text-xs text-slate-500">
-          <button type="button" onClick={() => setPage(Math.max(0, p - 1))} disabled={p === 0}
-            className="rounded border border-slate-200 px-2 py-1 font-medium disabled:opacity-40 hover:bg-slate-50">Prev</button>
-          <span>{p * BOARD_PAGE + 1}–{Math.min(items.length, (p + 1) * BOARD_PAGE)} of {items.length}</span>
-          <button type="button" onClick={() => setPage(Math.min(pages - 1, p + 1))} disabled={p >= pages - 1}
-            className="rounded border border-slate-200 px-2 py-1 font-medium disabled:opacity-40 hover:bg-slate-50">Next</button>
-        </div>
-      )}
+      <ListPager {...pager} noun="audits" />
     </section>
   );
 }
@@ -258,6 +281,7 @@ function AuditBoard({ schedules, navigate, todayStr }) {
   const [view, setView] = useState('board'); // 'board' | 'list'
   const { data: occurrences = [], isLoading } = useAuditOccurrences();
   const closeOcc = useCloseAuditOccurrence();
+  const startSubmission = useStartAuditSubmission();
 
   const openOcc = occurrences.filter((o) => o.status === 'open').sort((a, b) => String(b.due_date).localeCompare(String(a.due_date)));
   const closedOcc = occurrences.filter((o) => o.status === 'closed').sort((a, b) => String(b.closed_at || b.due_date).localeCompare(String(a.closed_at || a.due_date)));
@@ -283,7 +307,9 @@ function AuditBoard({ schedules, navigate, todayStr }) {
         <div className="font-semibold text-sm text-slate-900">{o.template_name} · {o.zone_name}</div>
         <div className="text-xs text-slate-500 mt-0.5">{String(o.due_date).slice(0, 10)}
           {o.status === 'closed'
-            ? (o.combined_score != null ? ` · combined ${Number(o.combined_score).toFixed(1)}/${Number(o.combined_max || 4)}` : ' · no score')
+            ? (o.combined_score != null
+              ? (Number(o.combined_max) === 1 ? ` · ${Math.round(Number(o.combined_score) * 100)}% Yes` : ` · combined ${Number(o.combined_score).toFixed(1)}/${Number(o.combined_max || 4)}`)
+              : ' · no score')
             : ` · ${o.submitted_count}/${o.expected_count} auditors submitted${String(o.due_date).slice(0, 10) < todayStr ? ' · overdue' : ''}`}
         </div>
       </button>
@@ -299,13 +325,30 @@ function AuditBoard({ schedules, navigate, todayStr }) {
       )}
     </div>
   );
-  const SchedCard = ({ s }) => (
-    <div className="w-full rounded-lg border border-slate-200 p-3">
-      <div className="font-semibold text-sm text-slate-900">{s.template_name} · {s.zone_name}</div>
-      <div className="text-xs text-slate-500 mt-0.5">{describeRecurrence(s)} · next {s.next_occurrence}</div>
-      <div className="text-xs text-slate-400 mt-0.5">Audit Admin: {s.admin_name}</div>
-    </div>
-  );
+  // A scheduled audit has no round yet. It only opens (starting the round) once its day has come.
+  const openScheduled = async (s) => {
+    try {
+      const created = await startSubmission.mutateAsync({ scheduleId: s.id, dueDate: String(s.next_occurrence).slice(0, 10) });
+      navigate(`/audits/${created.id}`, { state: { from: 'all' } });
+    } catch (e) {
+      toast.error(e.message || 'Could not open audit');
+    }
+  };
+  const SchedCard = ({ s }) => {
+    const body = (
+      <>
+        <div className="font-semibold text-sm text-slate-900">{s.template_name} · {s.zone_name}</div>
+        <div className="text-xs text-slate-500 mt-0.5">{describeRecurrence(s)} · next {s.next_occurrence}</div>
+        <div className="text-xs text-slate-400 mt-0.5">Audit Admin: {s.admin_name}</div>
+      </>
+    );
+    const due = String(s.next_occurrence).slice(0, 10) <= todayStr;
+    return due ? (
+      <button type="button" onClick={() => openScheduled(s)} disabled={startSubmission.isPending} className="w-full text-left rounded-lg border border-slate-200 p-3 hover:bg-slate-50">{body}</button>
+    ) : (
+      <div className="w-full rounded-lg border border-slate-200 p-3">{body}</div>
+    );
+  };
   const columns = (
     <>
       <PagedColumn title="Scheduled" items={scheduled} empty="Nothing upcoming."
@@ -332,152 +375,6 @@ function AuditBoard({ schedules, navigate, todayStr }) {
   );
 }
 
-// Plant-wide grading view for BE / Global Audit Admins — every submitted audit's score.
-function AuditScoresTab({ navigate }) {
-  const { data: rows = [], isLoading } = useAuditScores();
-  const [tpl, setTpl] = useState('all');
-  const [zone, setZone] = useState('all');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [page, setPage] = useState(0);
-  const PAGE = 5;
-
-  const templateNames = useMemo(() => [...new Set(rows.map((r) => r.template_name))].sort(), [rows]);
-  const zoneNames = useMemo(() => [...new Set(rows.map((r) => r.zone_name))].sort(), [rows]);
-
-  const dateOf = (r) => String(r.closed_at || r.due_date || '').slice(0, 10);
-  const filtered = rows.filter((r) => {
-    if (tpl !== 'all' && r.template_name !== tpl) return false;
-    if (zone !== 'all' && r.zone_name !== zone) return false;
-    const d = dateOf(r);
-    if (from && d < from) return false;
-    if (to && d > to) return false;
-    return true;
-  });
-  useEffect(() => { setPage(0); }, [tpl, zone, from, to]);
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE));
-  const safePage = Math.min(page, pageCount - 1);
-  const pageRows = filtered.slice(safePage * PAGE, safePage * PAGE + PAGE);
-  const scored = filtered.filter((r) => r.total_score != null && r.max_score != null && Number(r.max_score) > 0);
-  const pct = (r) => (Number(r.total_score) / Number(r.max_score)) * 100;
-  const avgPct = scored.length ? scored.reduce((a, r) => a + pct(r), 0) / scored.length : null;
-  const groupAvg = (key) => {
-    const m = {};
-    scored.forEach((r) => { (m[r[key]] ||= []).push(pct(r)); });
-    return Object.entries(m).map(([k, arr]) => [k, arr.reduce((a, b) => a + b, 0) / arr.length]).sort((a, b) => b[1] - a[1]);
-  };
-
-  function exportXlsx() {
-    const data = filtered.map((r) => ({
-      Date: dateOf(r),
-      Audit: r.template_name, Zone: r.zone_name,
-      Auditors: `${r.submitted_count || 0}/${r.expected_count || 0}`,
-      'Combined score': r.total_score != null ? Number(r.total_score).toFixed(2) : (r.scoring_mode === 'off' ? 'n/a' : ''),
-      'Out of': r.max_score != null ? Number(r.max_score) : '',
-      ...Object.fromEntries((r.categories || []).map((c) => [prettyCat(c.category), c.avg_score != null ? Number(c.avg_score).toFixed(2) : ''])),
-    }));
-    const ws = XLSX.utils.json_to_sheet(data.length ? data : [{ Date: '', Audit: '', Zone: '' }]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Audit Scores');
-    XLSX.writeFile(wb, 'audit_scores.xlsx');
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-2 items-end">
-        <Select value={tpl} onValueChange={setTpl}>
-          <SelectTrigger className="h-8 text-xs w-40"><SelectValue placeholder="Audit type" /></SelectTrigger>
-          <SelectContent><SelectItem value="all">All audit types</SelectItem>{templateNames.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}</SelectContent>
-        </Select>
-        <Select value={zone} onValueChange={setZone}>
-          <SelectTrigger className="h-8 text-xs w-40"><SelectValue placeholder="Zone" /></SelectTrigger>
-          <SelectContent><SelectItem value="all">All zones</SelectItem>{zoneNames.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}</SelectContent>
-        </Select>
-        <label className="text-xs text-slate-500">From <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36 inline-block" /></label>
-        <label className="text-xs text-slate-500">To <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36 inline-block" /></label>
-        <Button size="sm" variant="outline" onClick={exportXlsx} disabled={filtered.length === 0}><Download className="w-4 h-4 mr-1" /> Excel</Button>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-slate-200 bg-white p-3">
-          <div className="text-xs text-slate-500">Closed audits</div>
-          <div className="text-xl font-bold text-slate-900">{filtered.length}</div>
-        </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-3">
-          <div className="text-xs text-slate-500">Average grade</div>
-          <div className="text-xl font-bold text-slate-900">{avgPct != null ? `${avgPct.toFixed(0)}%` : '—'}</div>
-        </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-3">
-          <div className="text-xs text-slate-500">Scored / total</div>
-          <div className="text-xl font-bold text-slate-900">{scored.length}<span className="text-sm font-normal text-slate-400"> / {filtered.length}</span></div>
-        </div>
-      </div>
-
-      {scored.length > 0 && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {[['zone_name', 'By zone'], ['template_name', 'By audit type']].map(([k, label]) => (
-            <div key={k} className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-xs font-semibold text-slate-600 mb-1">{label}</div>
-              {groupAvg(k).map(([name, v]) => (
-                <div key={name} className="flex justify-between text-xs text-slate-600 py-0.5">
-                  <span className="truncate">{name}</span><span className="font-semibold">{v.toFixed(0)}%</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {isLoading ? <p className="text-sm text-slate-400 text-center py-8">Loading…</p> : filtered.length === 0 ? (
-        <EmptyState title="No closed audits" body="Grades appear here once an audit occurrence is closed (all auditors submitted, or a BE-lead closed it)." />
-      ) : (
-        <div className="rounded-md border border-slate-200 bg-white overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-28">Date</TableHead>
-                <TableHead>Audit · Zone</TableHead>
-                <TableHead className="w-24 text-center">Auditors</TableHead>
-                <TableHead className="w-28 text-right">Combined</TableHead>
-                <TableHead>Categories</TableHead>
-                <TableHead className="w-24 text-right">Report</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pageRows.map((r) => (
-                <TableRow key={r.id} className="hover:bg-slate-50">
-                  <TableCell className="text-xs text-slate-500">{dateOf(r)}</TableCell>
-                  <TableCell className="text-sm text-slate-800">{r.template_name} · <span className="text-slate-500">{r.zone_name}</span></TableCell>
-                  <TableCell className="text-center text-xs text-slate-500">{r.submitted_count || 0}/{r.expected_count || 0}</TableCell>
-                  <TableCell className="text-right text-sm font-semibold text-slate-900">
-                    {r.total_score != null ? `${Number(r.total_score).toFixed(1)}/${r.max_score != null ? Number(r.max_score) : 4}` : (r.scoring_mode === 'off' ? 'n/a' : '—')}
-                  </TableCell>
-                  <TableCell className="text-xs text-slate-500">
-                    {(r.categories || []).length === 0 ? '—' : (r.categories || []).map((c) => `${prettyCat(c.category)} ${Number(c.avg_score).toFixed(1)}`).join(' · ')}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <button onClick={() => navigate('/audits/report/' + r.id)} className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:underline">
-                      <FileText size={12} /> Report
-                    </button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          {filtered.length > PAGE && (
-            <div className="flex items-center justify-between border-t border-slate-200 px-3 py-2 text-xs text-slate-500">
-              <button type="button" onClick={() => setPage(Math.max(0, safePage - 1))} disabled={safePage === 0}
-                className="rounded border border-slate-200 px-2 py-1 font-medium disabled:opacity-40 hover:bg-slate-50">Prev</button>
-              <span>{safePage * PAGE + 1}–{Math.min(filtered.length, (safePage + 1) * PAGE)} of {filtered.length}</span>
-              <button type="button" onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))} disabled={safePage >= pageCount - 1}
-                className="rounded border border-slate-200 px-2 py-1 font-medium disabled:opacity-40 hover:bg-slate-50">Next</button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 const CONFIGURE_SUBTABS = [
   { key: 'templates', label: 'Templates', short: 'Templates', hideForScheduleAdmin: true },
@@ -1273,6 +1170,9 @@ function CreateTemplateDialog({ onClose }) {
   const [scoreMin, setScoreMin] = useState('1');
   const [scoreMax, setScoreMax] = useState('5');
   const [scoreStep, setScoreStep] = useState('1');
+  const [markStyle, setMarkStyle] = useState('scale'); // 'scale' = numeric marks, 'yes_no' = Yes (1) / No (0)
+  const [importPreview, setImportPreview] = useState(null); // parsed Excel awaiting confirmation
+  const [importFileName, setImportFileName] = useState('');
   const [limitAuditors, setLimitAuditors] = useState(false);
   const [maxAuditors, setMaxAuditors] = useState('3');
   const [flatQuestions, setFlatQuestions] = useState([{ question_text: '', photo_required: false }]);
@@ -1283,16 +1183,37 @@ function CreateTemplateDialog({ onClose }) {
   const updateCat = (i, field, value) => setCats((c) => c.map((x, idx) => (idx === i ? { ...x, [field]: value } : x)));
   const setCatQuestions = (i, updater) => setCats((c) => c.map((x, idx) => (idx === i ? { ...x, questions: typeof updater === 'function' ? updater(x.questions) : updater } : x)));
 
+  async function handlePickFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setImportFileName(file.name);
+      setImportPreview(await parseAuditFile(file));
+    } catch {
+      setImportPreview({ items: [], errors: ['Could not read that file. Please upload the .xlsx you downloaded.'], structure: null, categories: [] });
+    }
+  }
+  function applyImport() {
+    const f = toFormState(importPreview);
+    setStructure(f.structure);
+    if (f.flatQuestions) setFlatQuestions(f.flatQuestions);
+    if (f.cats) setCats(f.cats);
+    toast.success(`Loaded ${importPreview.items.length} questions — review them below, then Save audit`);
+    setImportPreview(null);
+  }
+
   async function handleSave() {
     if (!name.trim()) { toast.error('Give the audit a name'); return; }
-    if (scoringMode !== 'off') {
+    const yesNo = scoringMode !== 'off' && markStyle === 'yes_no';
+    if (scoringMode !== 'off' && !yesNo) {
       const mn = Number(scoreMin), mx = Number(scoreMax), st = Number(scoreStep);
       if (!(mx > mn) || !(st > 0)) { toast.error('Highest mark must exceed lowest, and step must be positive'); return; }
     }
     if (limitAuditors && !(Number(maxAuditors) >= 1)) { toast.error('Enter the auditor limit (1 or more)'); return; }
     const payload = {
       name: name.trim(), structure, scoring_mode: scoringMode,
-      score_min: Number(scoreMin), score_max: Number(scoreMax), score_step: Number(scoreStep),
+      score_min: yesNo ? 0 : Number(scoreMin), score_max: yesNo ? 1 : Number(scoreMax), score_step: yesNo ? 1 : Number(scoreStep),
       max_auditors: limitAuditors ? Number(maxAuditors) : null,
     };
     if (structure === 'questions') {
@@ -1331,6 +1252,45 @@ function CreateTemplateDialog({ onClose }) {
         <div className="space-y-4">
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Audit name (e.g. Safety Walk)" />
 
+          <div className="rounded-md border border-dashed border-slate-300 p-3 space-y-2">
+            <p className="text-xs font-semibold text-slate-600">Build from Excel (optional)</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={downloadAuditTemplateSheet}><Download className="w-4 h-4 mr-1" /> Download template</Button>
+              <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">
+                <Upload className="w-4 h-4" /> Import from Excel
+                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handlePickFile} />
+              </label>
+            </div>
+            {importPreview && (
+              <div className="space-y-2 rounded-md bg-slate-50 p-2">
+                <p className="text-xs text-slate-600">Preview of <strong>{importFileName}</strong> — {importPreview.items.length} question{importPreview.items.length === 1 ? '' : 's'}{importPreview.categories.length ? ` in ${importPreview.categories.length} categor${importPreview.categories.length === 1 ? 'y' : 'ies'}` : ''}</p>
+                {importPreview.errors.map((er, i) => <p key={i} className="text-xs font-medium text-rose-600">{er}</p>)}
+                {importPreview.items.length > 0 && (
+                  <div className="max-h-56 overflow-y-auto rounded border border-slate-200 bg-white">
+                    <table className="w-full text-xs">
+                      <thead><tr className="text-left text-slate-500"><th className="px-2 py-1">Row</th><th className="px-2 py-1">Category</th><th className="px-2 py-1">Question</th><th className="px-2 py-1">Photo</th></tr></thead>
+                      <tbody>
+                        {importPreview.items.map((it) => (
+                          <tr key={it.line} className={it.errors.length ? 'bg-rose-50' : ''}>
+                            <td className="px-2 py-1 align-top text-slate-400">{it.line}</td>
+                            <td className="px-2 py-1 align-top">{it.category || '—'}</td>
+                            <td className="px-2 py-1 align-top break-words">{it.question || '—'}{it.errors.length > 0 && <span className="block font-medium text-rose-600">{it.errors.join('; ')}</span>}</td>
+                            <td className="px-2 py-1 align-top">{it.photo ? 'Yes' : 'No'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={() => setImportPreview(null)}>Discard</Button>
+                  <Button type="button" size="sm" onClick={applyImport} disabled={hasBlockingErrors(importPreview)}>Load into this audit</Button>
+                </div>
+                {hasBlockingErrors(importPreview) && <p className="text-[11px] text-slate-400">Fix the highlighted rows in the sheet and import it again.</p>}
+              </div>
+            )}
+          </div>
+
           <div className="grid sm:grid-cols-2 gap-3">
             <div>
               <p className="text-xs font-semibold text-slate-600 mb-1">Structure</p>
@@ -1351,6 +1311,14 @@ function CreateTemplateDialog({ onClose }) {
           </div>
 
           {scoringMode !== 'off' && (
+            <div className="flex gap-2">
+              {[{ v: 'scale', l: 'Marks (e.g. 1–4)' }, { v: 'yes_no', l: 'Yes / No' }].map((o) => (
+                <button key={o.v} type="button" onClick={() => setMarkStyle(o.v)}
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${markStyle === o.v ? 'bg-primary text-white' : 'bg-slate-100 text-slate-600'}`}>{o.l}</button>
+              ))}
+            </div>
+          )}
+          {scoringMode !== 'off' && markStyle === 'scale' && (
             <div className="flex gap-3 items-end text-xs text-slate-600">
               <label>Lowest mark<Input type="number" value={scoreMin} onChange={(e) => setScoreMin(e.target.value)} className="h-8 w-20 mt-0.5" /></label>
               <label>Highest mark<Input type="number" value={scoreMax} onChange={(e) => setScoreMax(e.target.value)} className="h-8 w-20 mt-0.5" /></label>

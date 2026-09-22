@@ -11,6 +11,8 @@ import {
 } from '../../components/ui/table';
 import { cn } from '../../lib/utils';
 import { useDmtTasks } from '../lib/useDmtTasks';
+import { useDmtTiers } from '../lib/useDmtTiers';
+import { tierLabel } from '../lib/taskExtras';
 import { todayStr, fmtShort } from '../lib/dmtDates';
 
 const STATUS_CLS = {
@@ -26,9 +28,11 @@ const isOverdue = (t) => !['completed', 'cancelled'].includes(t.status) && t.due
 
 export function DmtAdminTaskOverview() {
     const navigate = useNavigate();
-    const { tasks, departments } = useDmtTasks();
+    const { tasks } = useDmtTasks();
+    const tiers = useDmtTiers();
+    const groupName = useMemo(() => Object.fromEntries((tiers.data || []).map((t) => [t.id, tierLabel(t)])), [tiers.data]);
     const [status, setStatus] = useState('all');
-    const [dept, setDept] = useState('all');
+    const [group, setGroup] = useState('all');
     const [priority, setPriority] = useState('all');
     const [overdueOnly, setOverdueOnly] = useState(false);
     const [search, setSearch] = useState('');
@@ -36,13 +40,14 @@ export function DmtAdminTaskOverview() {
     const rows = useMemo(() => {
         let r = tasks.rows;
         if (status !== 'all') r = r.filter((t) => t.status === status);
-        if (dept !== 'all') r = r.filter((t) => t.department_id === dept);
+        if (group === 'none') r = r.filter((t) => !t.tier_id);
+        else if (group !== 'all') r = r.filter((t) => t.tier_id === group);
         if (priority !== 'all') r = r.filter((t) => t.priority === priority);
         if (overdueOnly) r = r.filter(isOverdue);
         const q = search.trim().toLowerCase();
-        if (q) r = r.filter((t) => `${t.title} #${t.task_number} ${t.owner_name} ${t.dept_name || ''}`.toLowerCase().includes(q));
+        if (q) r = r.filter((t) => `${t.title} #${t.task_number} ${t.owner_name} ${groupName[t.tier_id] || ''}`.toLowerCase().includes(q));
         return r.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-    }, [tasks.rows, status, dept, priority, overdueOnly, search]);
+    }, [tasks.rows, status, group, priority, overdueOnly, search, groupName]);
 
     const stats = useMemo(() => {
         const all = tasks.rows;
@@ -80,11 +85,12 @@ export function DmtAdminTaskOverview() {
                         {['open', 'in_progress', 'blocked', 'completed', 'cancelled'].map((s) => <SelectItem key={s} value={s}>{s.replace('_', ' ')}</SelectItem>)}
                     </SelectContent>
                 </Select>
-                <Select value={dept} onValueChange={setDept}>
-                    <SelectTrigger className="h-9 w-40 text-sm"><SelectValue /></SelectTrigger>
+                <Select value={group} onValueChange={setGroup}>
+                    <SelectTrigger className="h-9 w-48 text-sm"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                        <SelectItem value="all">All departments</SelectItem>
-                        {(departments.data || []).map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
+                        <SelectItem value="all">All groups</SelectItem>
+                        <SelectItem value="none">Not in any group</SelectItem>
+                        {(tiers.data || []).map((t) => <SelectItem key={t.id} value={t.id}>{tierLabel(t)}</SelectItem>)}
                     </SelectContent>
                 </Select>
                 <Select value={priority} onValueChange={setPriority}>
@@ -109,7 +115,7 @@ export function DmtAdminTaskOverview() {
                             <TableRow>
                                 <TableHead>#</TableHead>
                                 <TableHead>Title</TableHead>
-                                <TableHead>Department</TableHead>
+                                <TableHead>Group</TableHead>
                                 <TableHead>Owner</TableHead>
                                 <TableHead>Priority</TableHead>
                                 <TableHead>Status</TableHead>
@@ -118,10 +124,10 @@ export function DmtAdminTaskOverview() {
                         </TableHeader>
                         <TableBody>
                             {rows.map((t) => (
-                                <TableRow key={t.id} className="cursor-pointer" onClick={() => navigate('/dmt/tasks')}>
+                                <TableRow key={t.id} className="cursor-pointer" onClick={() => navigate(`/dmt/tasks?open=${t.id}`)}>
                                     <TableCell className="text-slate-400">{t.task_number}</TableCell>
                                     <TableCell className="font-medium">{t.title}</TableCell>
-                                    <TableCell className="text-slate-500">{t.dept_name || '—'}</TableCell>
+                                    <TableCell className="text-slate-500">{groupName[t.tier_id] || 'Not in any group'}</TableCell>
                                     <TableCell className="text-slate-500">{t.owner_name}</TableCell>
                                     <TableCell><Badge className={cn('text-[10px]', PRIORITY_CLS[t.priority])}>{t.priority}</Badge></TableCell>
                                     <TableCell><Badge className={cn('text-[10px]', STATUS_CLS[t.status])}>{t.status.replace('_', ' ')}</Badge></TableCell>

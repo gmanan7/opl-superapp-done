@@ -24,7 +24,6 @@ export function ProfileSheet({ open, onOpenChange }) {
       <SheetContent side="bottom" className="bg-surface-raised">
         <SheetHeader>
           <SheetTitle className="text-ink-strong">{name || t('nav.profile')}</SheetTitle>
-          {role && <SheetDescription className="text-ink-muted">{t(`roles.${role}`)}</SheetDescription>}
         </SheetHeader>
         <div className="space-y-4 py-4">
           {/* Master Data — mobile entry point for entitled roles (desktop has the sidebar) */}

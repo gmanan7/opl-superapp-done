@@ -5,7 +5,6 @@ export function ModuleSelect() {
     const navigate = useNavigate();
     const session = loadSession();
     const userName = session?.name || session?.email?.split('@')[0] || 'User';
-    const userRole = session?.role || 'operator';
     const handleLogout = () => {
         clearSession();
         navigate('/login', { replace: true });
@@ -26,7 +25,7 @@ export function ModuleSelect() {
             </div>
             <div>
               <h1 className="text-base font-bold tracking-tight text-slate-900 sm:text-lg">
-                TPM Fulcrum
+                FOCUS
               </h1>
               <p className="text-xs text-slate-500 font-medium">Operational Portal</p>
             </div>
@@ -36,9 +35,6 @@ export function ModuleSelect() {
             <div className="hidden sm:flex items-center gap-2 border-r border-slate-200 pr-4 text-right">
               <div>
                 <p className="text-xs font-semibold text-slate-800">{userName}</p>
-                <p className="text-2xs uppercase tracking-wider text-amber-600 font-bold">
-                  {userRole.replace('_', ' ')}
-                </p>
               </div>
             </div>
 
@@ -99,13 +95,9 @@ export function ModuleSelect() {
                 </p>
               </div>
 
-              <p className="mt-2 sm:mt-4 text-[11px] sm:text-sm text-slate-600 leading-snug line-clamp-2 sm:line-clamp-none">
-                Comprehensive maintenance including Abnormalities, OPL, Kaizen, and Audits.
-              </p>
-
               {/* Feature Tags */}
               <div className="mt-3 sm:mt-6 flex flex-wrap gap-1 sm:gap-1.5">
-                {['Abnormalities', 'OPL', 'Kaizen', 'Audits & MDM'].map((tag) => (<span key={tag} className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-2xs sm:text-[11px] font-semibold text-slate-700">
+                {['Abnormalities', 'OPL', 'Kaizen', 'Audits'].map((tag) => (<span key={tag} className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-2xs sm:text-[11px] font-semibold text-slate-700">
                     {tag}
                   </span>))}
               </div>
@@ -155,13 +147,9 @@ export function ModuleSelect() {
                 </p>
               </div>
 
-              <p className="mt-2 sm:mt-4 text-[11px] sm:text-sm text-slate-600 leading-snug line-clamp-2 sm:line-clamp-none">
-                Tiered operational meetings, shift handovers, and shop-floor productivity tracking.
-              </p>
-
               {/* Feature Tags */}
               <div className="mt-3 sm:mt-6 flex flex-wrap gap-1 sm:gap-1.5">
-                {['Tier Meetings', 'Shift Handover', 'Daily Checklists'].map((tag) => (<span key={tag} className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-2xs sm:text-[11px] font-semibold text-slate-700">
+                {['Tier Meeting', 'KPI Tracking', 'Task Management'].map((tag) => (<span key={tag} className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-2xs sm:text-[11px] font-semibold text-slate-700">
                     {tag}
                   </span>))}
               </div>
@@ -184,7 +172,7 @@ export function ModuleSelect() {
         {/* Footnote */}
         <div className="mt-3 sm:mt-12 text-center text-[11px] sm:text-xs text-slate-500 flex items-center justify-center gap-1.5 shrink-0">
           <User size={13} className="text-slate-400 shrink-0"/>
-          <span className="truncate">Signed in as <strong className="text-slate-700">{userName}</strong> ({userRole})</span>
+          <span className="truncate">Signed in as <strong className="text-slate-700">{userName}</strong></span>
         </div>
       </main>
     </div>);

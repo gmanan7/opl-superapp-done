@@ -55,6 +55,17 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(updates)
     }),
+    // People onboarding (BE lead tier)
+    peopleMeta: () => apiFetch('/people/meta'),
+    peopleOnboard: (rows, dryRun = false) => apiFetch('/people/onboard', {
+        method: 'POST',
+        body: JSON.stringify({ rows, dry_run: dryRun })
+    }),
+    peopleUpdate: (empId, fields) => apiFetch(`/people/${encodeURIComponent(empId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(fields)
+    }),
+    peopleResetPassword: (empId) => apiFetch(`/people/${encodeURIComponent(empId)}/reset-password`, { method: 'POST' }),
     // Org Structure & Modules
     getFactories: () => apiFetch('/org/factories'),
     getAreas: () => apiFetch('/org/areas'),

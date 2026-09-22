@@ -92,6 +92,7 @@ async function main() {
   const existingIds = existing.rows.map((r) => r.id);
   if (existingIds.length) {
     await pool.query(`DELETE FROM dmt_kpi_entries WHERE kpi_id = ANY($1)`, [existingIds]);
+    await pool.query(`DELETE FROM dmt_tier_kpi WHERE kpi_id = ANY($1)`, [existingIds]);
     await pool.query(`DELETE FROM dmt_kpi_master WHERE id = ANY($1)`, [existingIds]);
   }
   console.log(`Removed ${existingIds.length} existing EHS demo KPI(s).`);

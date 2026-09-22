@@ -1,10 +1,16 @@
+import { useState } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Sheet, SheetContent, SheetTitle } from '../components/ui/sheet';
+import { useTranslation } from 'react-i18next';
 import {
     LayoutDashboard, ListChecks, CalendarDays, Gauge, LineChart, Wrench,
-    FlaskConical, NotebookPen, ArrowLeft, Building2,
-    ClipboardCheck, ClipboardList, ScrollText,
+    FlaskConical, NotebookPen, Building2,
+    ClipboardCheck, ClipboardList, LogOut, Menu,
 } from 'lucide-react';
+import { logout } from '../lib/auth';
 import { useDmtMe } from './lib/useDmt';
+import { NotificationBell } from '../components/layout/NotificationBell';
+import { ModuleSwitch } from '../components/layout/ModuleSwitch';
 
 const CAPTURE_NAV = [
     { to: '/dmt', end: true, icon: LayoutDashboard, label: 'Dashboard' },
@@ -25,13 +31,18 @@ const CAPTURE_NAV = [
 const ADMIN_NAV = [
     { to: '/dmt/organisation', icon: Building2, label: 'Organisation', min: 'leadership' },
     { to: '/dmt/admin/tasks', icon: ListChecks, label: 'Task Overview', min: 'leadership' },
-    { to: '/dmt/admin/charts', icon: LineChart, label: 'KPI Charts', min: 'leadership' },
-    { to: '/dmt/admin/audit', icon: ScrollText, label: 'Audit Log', min: 'be_lead' },
 ];
 
 export function DmtShell() {
     const navigate = useNavigate();
+    const { t } = useTranslation();
     const { user, tierAtLeast } = useDmtMe();
+    const [menuOpen, setMenuOpen] = useState(false);
+    // Same sign-out as the profile menu in Lumos: clears the session (and cached data), then back to the login page.
+    const handleLogout = async () => {
+        await logout();
+        navigate('/login', { replace: true });
+    };
     const adminNav = ADMIN_NAV.filter((n) => tierAtLeast(n.min));
 
     const link = (isActive) =>
@@ -46,11 +57,11 @@ export function DmtShell() {
         <div className="flex min-h-dvh bg-slate-50">
             <aside className="fixed left-0 top-0 bottom-0 z-40 hidden w-[220px] flex-col bg-stone-900 md:flex">
                 <div className="shrink-0 border-b border-white/10 px-4 py-5">
-                    <span className="text-sm font-bold tracking-tight text-white">Fulcrum · DMT</span>
+                    <span className="text-sm font-bold tracking-tight text-white">FOCUS · CloseLoop</span>
                     {user?.name && <p className="mt-0.5 truncate text-xs text-stone-400">{user.name}</p>}
                 </div>
 
-                <nav className="flex-1 space-y-0.5 overflow-y-auto py-3">
+                <nav className="no-scrollbar flex-1 space-y-0.5 overflow-y-auto py-3">
                     {CAPTURE_NAV.map(({ to, end, icon: Icon, label }) => (
                         <NavLink key={to} to={to} end={end} className={({ isActive }) => link(isActive)}>
                             {({ isActive }) => (
@@ -81,7 +92,9 @@ export function DmtShell() {
                     )}
                 </nav>
 
-                <div className="shrink-0 border-t border-white/10 px-3 py-3">
+                <div className="shrink-0 space-y-1 border-t border-white/10 px-3 py-3">
+                    <ModuleSwitch current="closeloop" />
+                    <NotificationBell variant="sidebar" />
                     {user?.factory_name && (
                         <div className="mb-2 flex items-center gap-2 px-2.5 py-1 text-xs text-stone-400">
                             <Building2 size={13} strokeWidth={1.8} />
@@ -90,28 +103,46 @@ export function DmtShell() {
                     )}
                     <button
                         type="button"
-                        onClick={() => navigate('/select-module')}
+                        onClick={handleLogout}
                         className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs font-medium text-stone-300 transition-colors hover:bg-white/5 hover:text-white"
                     >
-                        <ArrowLeft size={14} strokeWidth={1.8} />
-                        Back to modules
+                        <LogOut size={14} strokeWidth={1.8} />
+                        {t('common.logout')}
                     </button>
                 </div>
             </aside>
 
-            <div className="flex min-h-dvh flex-1 flex-col md:ml-[220px]">
+            <div className="flex min-h-dvh min-w-0 flex-1 flex-col md:ml-[220px]">
                 {/* Mobile top bar */}
-                <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:hidden">
-                    <span className="text-sm font-bold text-slate-900">Fulcrum · DMT</span>
-                    <button
-                        type="button"
-                        onClick={() => navigate('/select-module')}
-                        className="text-xs font-medium text-slate-500"
-                    >
-                        Modules
+                <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3 md:hidden">
+                    <button type="button" onClick={() => setMenuOpen(true)} aria-label="Menu" className="text-slate-700">
+                        <Menu size={22} strokeWidth={1.8} />
+                    </button>
+                    <span className="text-sm font-bold text-slate-900">FOCUS · CloseLoop</span>
+                    <div className="w-14"><NotificationBell variant="mobile" /></div>
+                    <ModuleSwitch current="closeloop" variant="mobile" />
+                    <button type="button" onClick={handleLogout} aria-label={t('common.logout')} className="text-slate-500">
+                        <LogOut size={18} strokeWidth={1.8} />
                     </button>
                 </div>
-                <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+                <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
+                    <SheetContent side="left" className="w-[260px] max-w-[80vw] border-0 bg-stone-900 p-0">
+                        <SheetTitle className="sr-only">Menu</SheetTitle>
+                        <div className="border-b border-white/10 px-4 py-5">
+                            <span className="text-sm font-bold text-white">FOCUS · CloseLoop</span>
+                            {user?.name && <p className="mt-0.5 truncate text-xs text-stone-400">{user.name}</p>}
+                        </div>
+                        <nav className="h-[calc(100dvh-80px)] space-y-0.5 overflow-y-auto py-3">
+                            {[...CAPTURE_NAV, ...adminNav].map(({ to, end, icon: Icon, label }) => (
+                                <NavLink key={to} to={to} end={end} onClick={() => setMenuOpen(false)} className={({ isActive }) => link(isActive)}>
+                                    <Icon size={18} strokeWidth={1.8} />
+                                    {label}
+                                </NavLink>
+                            ))}
+                        </nav>
+                    </SheetContent>
+                </Sheet>
+                <main className="min-w-0 flex-1 overflow-y-auto p-4 sm:p-6">
                     <Outlet />
                 </main>
             </div>

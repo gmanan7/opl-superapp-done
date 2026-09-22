@@ -167,7 +167,7 @@ export function OnePointLessonSheet({
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Users size={13} className="text-slate-400" />
-                    <span>Group: <strong className="text-slate-800">{lesson.jh_group_name || 'Alpha Team'}</strong></span>
+                    <span>Group: <strong className="text-slate-800">{lesson.jh_group_name || '—'}</strong></span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <User size={13} className="text-slate-400" />

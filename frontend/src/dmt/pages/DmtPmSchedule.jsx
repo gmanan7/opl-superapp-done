@@ -1,9 +1,9 @@
 import { useState, useMemo, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, ChevronDown, Settings, Plus, Pencil, Trash2, Pause, Play, Loader2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, Pencil, Check, Info, Plus, X, Loader2, Search } from 'lucide-react';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../components/ui/dropdown-menu';
 import { toast } from 'sonner';
 import { Button } from '../../components/ui/button';
-import { Input } from '../../components/ui/input';
 import { Textarea } from '../../components/ui/textarea';
 import {
     Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -11,94 +11,165 @@ import {
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '../../components/ui/dialog';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../components/ui/sheet';
 import { cn } from '../../lib/utils';
 import { dmtApi } from '../lib/dmtApi';
 import { useDmtMe } from '../lib/useDmt';
 import {
     toIsoDate, daysBetween, daysOfMonth, getCellState,
-    filterMachinesByLine, filterMachinesByCriticality, groupMachinesByGroup, CELL_CLASS,
+    filterMachinesByModule, filterMachinesByCriticality, groupMachinesByGroup, CELL_CLASS, PM_GRACE_DAYS,
 } from '../lib/pmSchedule';
 
-function ManageMachinesSheet({ open, onClose, machines }) {
-    const qc = useQueryClient();
-    const [form, setForm] = useState(null); // {id?, line, group_name, name, is_critical}
-    const refresh = () => qc.invalidateQueries({ queryKey: ['dmt', 'pm-machines'] });
-    const save = useMutation({
-        mutationFn: async () => {
-            if (form.id) return dmtApi.update('pm-machines', form.id, { line: form.line, group_name: form.group_name, name: form.name, is_critical: form.is_critical });
-            const factory = await dmtApi.myFactory();
-            return dmtApi.create('pm-machines', { line: form.line, group_name: form.group_name, name: form.name, is_critical: form.is_critical, factory_id: factory?.id });
-        },
-        onSuccess: () => { toast.success('Saved'); refresh(); setForm(null); },
-        onError: (e) => toast.error(e.message),
-    });
-    const setActive = useMutation({
-        mutationFn: ({ id, v }) => dmtApi.update('pm-machines', id, { is_active: v }),
-        onSuccess: () => { refresh(); toast.success('Updated'); },
-        onError: (e) => toast.error(e.message),
-    });
+// What each square colour means. Swatches reuse CELL_CLASS and the day counts come from
+// PM_GRACE_DAYS, so this key can never drift from what the grid actually paints.
+const G = PM_GRACE_DAYS;
+const CELL_KEY = [
+    { state: 'empty', title: 'Nothing planned', text: 'No PM is planned or recorded for this machine on this day.' },
+    { state: 'planned-future', title: 'Planned', text: 'PM is planned for a future date.' },
+    { state: 'planned-past', title: 'Due now', text: `Planned for today, or up to ${G} days ago, and not marked done yet.` },
+    { state: 'overdue', title: 'Overdue', text: `Planned more than ${G} days ago and still not marked done.` },
+    { state: 'done-on-time', title: 'Done on time', text: 'Marked done on the planned day (or earlier), or done without a plan.' },
+    { state: 'done-delayed-minor', title: `Done — 1 to ${G} days late`, text: `Marked done 1 to ${G} days after the planned day.` },
+    { state: 'done-delayed-major', title: `Done — ${G + 1} or more days late`, text: `Marked done ${G + 1} or more days after the planned day.` },
+];
+
+// The key sits behind an "i" button so it stays out of the way until someone wants it.
+function LegendButton() {
     return (
-        <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-            <SheetContent className="w-full overflow-y-auto sm:max-w-md">
-                <SheetHeader><SheetTitle>Manage Machines</SheetTitle></SheetHeader>
-                <div className="mt-4 space-y-3">
-                    <Button size="sm" className="gap-1" onClick={() => setForm({ line: 'SFM', group_name: '', name: '', is_critical: true })}><Plus className="h-4 w-4" /> Add Machine</Button>
-                    {form && (
-                        <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                            <div className="grid grid-cols-2 gap-2">
-                                <Select value={form.line} onValueChange={(v) => setForm({ ...form, line: v })}>
-                                    <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
-                                    <SelectContent><SelectItem value="SFM">SFM</SelectItem><SelectItem value="RFM">RFM</SelectItem></SelectContent>
-                                </Select>
-                                <Input placeholder="Group" value={form.group_name} onChange={(e) => setForm({ ...form, group_name: e.target.value })} className="h-9 text-sm" />
-                            </div>
-                            <Input placeholder="Machine name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" />
-                            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={form.is_critical} onChange={(e) => setForm({ ...form, is_critical: e.target.checked })} /> Critical</label>
-                            <div className="flex gap-2">
-                                <Button size="sm" disabled={!form.name || !form.group_name || save.isPending} onClick={() => save.mutate()}>Save</Button>
-                                <Button size="sm" variant="outline" onClick={() => setForm(null)}>Cancel</Button>
-                            </div>
+        <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" className="h-9 w-9" aria-label="How to read this calendar" title="How to read this calendar">
+                    <Info className="h-4 w-4 text-blue-600" />
+                </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-[340px] space-y-2.5 p-3">
+                {CELL_KEY.map((k) => (
+                    <div key={k.state} className="flex items-start gap-2.5">
+                        <span className={cn('mt-0.5 inline-block h-5 w-6 shrink-0 rounded-sm border border-slate-200', CELL_CLASS[k.state])} />
+                        <div className="min-w-0">
+                            <p className="text-xs font-semibold text-slate-800">{k.title}</p>
+                            <p className="text-xs text-slate-500">{k.text}</p>
                         </div>
-                    )}
-                    <div className="space-y-1">
-                        {machines.map((m) => (
-                            <div key={m.id} className={cn('flex items-center justify-between rounded border border-slate-200 p-2 text-sm', !m.is_active && 'opacity-50')}>
-                                <span className="truncate">{m.line} · {m.group_name} · {m.name}</span>
-                                <div className="flex shrink-0 gap-0.5">
-                                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setForm({ id: m.id, line: m.line, group_name: m.group_name, name: m.name, is_critical: m.is_critical })}><Pencil className="h-3.5 w-3.5" /></Button>
-                                    {m.is_active
-                                        ? <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-500" onClick={() => setActive.mutate({ id: m.id, v: false })}><Pause className="h-3.5 w-3.5" /></Button>
-                                        : <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500" onClick={() => setActive.mutate({ id: m.id, v: true })}><Play className="h-3.5 w-3.5" /></Button>}
-                                </div>
-                            </div>
+                    </div>
+                ))}
+            </DropdownMenuContent>
+        </DropdownMenu>
+    );
+}
+
+// Picker: machines come from the master list; people with edit access choose which ones appear on
+// this calendar. Only machines not already on it are offered.
+function AddMachinesDialog({ open, onClose }) {
+    const qc = useQueryClient();
+    const [search, setSearch] = useState('');
+    const [moduleFilter, setModuleFilter] = useState('All');
+    const [picked, setPicked] = useState(new Set());
+    const master = useQuery({ queryKey: ['dmt', 'pm-machine-master'], queryFn: dmtApi.pmMachineMaster, enabled: open });
+
+    const available = (master.data || []).filter((m) => !m.in_schedule);
+    const shown = available.filter((m) =>
+        (moduleFilter === 'All' || (moduleFilter === 'None' ? !m.module : m.module === moduleFilter))
+        && (!search || `${m.name} ${m.machine_type || ''} ${m.module || ''}`.toLowerCase().includes(search.trim().toLowerCase())));
+    const moduleChips = ['All', ...[...new Set(available.map((m) => m.module).filter(Boolean))].sort(), ...(available.some((m) => !m.module) ? ['None'] : [])];
+
+    const close = () => { setPicked(new Set()); setSearch(''); setModuleFilter('All'); onClose(); };
+    const toggle = (id) => setPicked((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    const allShownPicked = shown.length > 0 && shown.every((m) => picked.has(m.id));
+    const toggleAllShown = () => setPicked((p) => {
+        const n = new Set(p);
+        if (allShownPicked) shown.forEach((m) => n.delete(m.id)); else shown.forEach((m) => n.add(m.id));
+        return n;
+    });
+
+    const add = useMutation({
+        mutationFn: () => dmtApi.addPmMachines([...picked]),
+        onSuccess: (r) => {
+            toast.success(`${r.added} machine${r.added === 1 ? '' : 's'} added to the PM Schedule`);
+            qc.invalidateQueries({ queryKey: ['dmt', 'pm-machine-list'] });
+            qc.invalidateQueries({ queryKey: ['dmt', 'pm-machine-master'] });
+            close();
+        },
+        onError: (e) => toast.error(e.message),
+    });
+
+    return (
+        <Dialog open={open} onOpenChange={(o) => { if (!o) close(); }}>
+            <DialogContent className="sm:max-w-[520px]">
+                <DialogHeader><DialogTitle>Add machines to the PM Schedule</DialogTitle></DialogHeader>
+                <p className="text-xs text-slate-500">
+                    Pick from the master machine list (MDM → Machines). Only machines not already on the calendar are shown.
+                    A machine’s module, machine type and critical flag are set in the master list.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative min-w-[160px] flex-1">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search machines…"
+                            className="h-9 w-full rounded-md border border-slate-200 pl-9 pr-3 text-sm" />
+                    </div>
+                    <div className="inline-flex flex-wrap overflow-hidden rounded-md border border-slate-200 bg-white">
+                        {moduleChips.map((l) => (
+                            <button key={l} type="button" onClick={() => setModuleFilter(l)}
+                                className={cn('h-9 px-2.5 text-xs font-medium', moduleFilter === l ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-100')}>
+                                {l === 'None' ? 'No module' : l}
+                            </button>
                         ))}
                     </div>
                 </div>
-            </SheetContent>
-        </Sheet>
+                <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-2">
+                    {master.isLoading && <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>}
+                    {master.error && <p className="p-2 text-sm text-rose-600">{master.error.message}</p>}
+                    {master.data && available.length === 0 && (
+                        <p className="p-3 text-sm text-slate-500">Every active machine in the master list is already on the calendar.</p>
+                    )}
+                    {master.data && available.length > 0 && shown.length === 0 && (
+                        <p className="p-3 text-sm text-slate-500">No machines match.</p>
+                    )}
+                    {shown.length > 0 && (
+                        <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                            <input type="checkbox" checked={allShownPicked} onChange={toggleAllShown} className="h-3.5 w-3.5 rounded border-slate-300" />
+                            Select all shown ({shown.length})
+                        </label>
+                    )}
+                    {shown.map((m) => (
+                        <label key={m.id} className={cn('flex cursor-pointer items-center gap-2 rounded-md border p-2 text-sm', picked.has(m.id) ? 'border-blue-600/40 bg-blue-50' : 'border-transparent hover:bg-slate-50')}>
+                            <input type="checkbox" checked={picked.has(m.id)} onChange={() => toggle(m.id)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                            <span className="flex-1 truncate">{m.name}{m.is_critical === false && <span className="ml-1 text-slate-300">·</span>}</span>
+                            <span className="text-xs text-slate-400">{[m.module, m.machine_type].filter(Boolean).join(' · ') || 'no module / machine type yet'}</span>
+                        </label>
+                    ))}
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" onClick={close}>Cancel</Button>
+                    <Button disabled={picked.size === 0 || add.isPending} onClick={() => add.mutate()}>
+                        {add.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        {picked.size ? `Add ${picked.size} machine${picked.size > 1 ? 's' : ''}` : 'Add machines'}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
 
 export function DmtPmSchedule() {
-    const { user, tierAtLeast } = useDmtMe();
+    const { user } = useDmtMe();
     const me = user?.emp_id;
     const qc = useQueryClient();
-    const [manageOpen, setManageOpen] = useState(false);
-    const myDepts = useQuery({ queryKey: ['dmt', 'my-departments', me], queryFn: () => dmtApi.myDepartments(), enabled: !!me });
-    const inEng = (myDepts.data || []).some((d) => d.code === 'ENG');
-    const isAdmin = tierAtLeast('leadership');
-    const canEditPlan = tierAtLeast('module_lead');
-    const canEditActual = tierAtLeast('module_lead') || inEng;
+
+    // Everyone can view; only people BE Admin listed (PM Schedule Edit Access tab) can edit.
+    const accessQ = useQuery({ queryKey: ['dmt', 'pm-edit-access', me], queryFn: dmtApi.pmEditAccessMe, enabled: !!me });
+    const canEditAccess = !!accessQ.data?.can_edit;
+    const [editing, setEditing] = useState(false);
+    const editMode = canEditAccess && editing;
 
     const [refDate, setRefDate] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
     const [mode, setMode] = useState('plan');
-    const [lineFilter, setLineFilter] = useState('All');
+    const [moduleFilter, setModuleFilter] = useState('All');
     const [critFilter, setCritFilter] = useState('All');
     const [collapsed, setCollapsed] = useState({});
     const [remarks, setRemarks] = useState(null); // { machine, date, existing }
     const [remarksText, setRemarksText] = useState('');
     const [confirmRemove, setConfirmRemove] = useState(false);
+    const [addOpen, setAddOpen] = useState(false);
+    const [removeMachine, setRemoveMachine] = useState(null); // machine being taken off the calendar
 
     const today = useMemo(() => toIsoDate(new Date()), []);
     const monthDays = useMemo(() => daysOfMonth(refDate), [refDate]);
@@ -106,8 +177,8 @@ export function DmtPmSchedule() {
     const monthEnd = monthDays.length ? toIsoDate(monthDays[monthDays.length - 1]) : '';
 
     const machinesQ = useQuery({
-        queryKey: ['dmt', 'pm-machines'],
-        queryFn: () => dmtApi.list('pm-machines'),
+        queryKey: ['dmt', 'pm-machine-list'],
+        queryFn: dmtApi.pmMachines,
     });
     const plansQ = useQuery({
         queryKey: ['dmt', 'pm-plan', monthStart],
@@ -122,8 +193,8 @@ export function DmtPmSchedule() {
         select: (rows) => rows.filter((a) => a.actual_date >= monthStart && a.actual_date <= monthEnd),
     });
 
-    const allMachines = machinesQ.data || [];
-    const machines = allMachines.filter((m) => m.is_active);
+    const machines = (machinesQ.data || []).filter((m) => m.is_active);
+    const moduleTabs = ['All', ...[...new Set(machines.map((m) => m.module).filter(Boolean))].sort()];
     const planMap = useMemo(() => {
         const m = new Map();
         for (const p of plansQ.data || []) m.set(`${p.machine_id}|${p.planned_date}`, p);
@@ -136,8 +207,8 @@ export function DmtPmSchedule() {
     }, [actualsQ.data]);
 
     const visible = useMemo(
-        () => filterMachinesByCriticality(filterMachinesByLine(machines, lineFilter), critFilter),
-        [machines, lineFilter, critFilter],
+        () => filterMachinesByCriticality(filterMachinesByModule(machines, moduleFilter), critFilter),
+        [machines, moduleFilter, critFilter],
     );
     const grouped = useMemo(() => groupMachinesByGroup(visible), [visible]);
 
@@ -145,6 +216,22 @@ export function DmtPmSchedule() {
         qc.invalidateQueries({ queryKey: ['dmt', 'pm-plan'] });
         qc.invalidateQueries({ queryKey: ['dmt', 'pm-actual'] });
     };
+    // A refused save usually means access was just removed — re-check so the Edit button goes away.
+    const onWriteError = (e) => {
+        toast.error(e.message);
+        qc.invalidateQueries({ queryKey: ['dmt', 'pm-edit-access'] });
+    };
+
+    const removeFromSchedule = useMutation({
+        mutationFn: (machineId) => dmtApi.removePmMachine(machineId),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['dmt', 'pm-machine-list'] });
+            qc.invalidateQueries({ queryKey: ['dmt', 'pm-machine-master'] });
+            setRemoveMachine(null);
+            toast.success('Machine removed from the PM Schedule');
+        },
+        onError: onWriteError,
+    });
 
     const togglePlan = useMutation({
         mutationFn: async ({ machine, date }) => {
@@ -153,7 +240,7 @@ export function DmtPmSchedule() {
             return dmtApi.create('pm-plan', { machine_id: machine.id, planned_date: date, created_by: me });
         },
         onSuccess: invalidate,
-        onError: (e) => toast.error(e.message),
+        onError: onWriteError,
     });
     const upsertActual = useMutation({
         mutationFn: async ({ machine, date, text }) => {
@@ -162,20 +249,17 @@ export function DmtPmSchedule() {
             return dmtApi.create('pm-actual', { machine_id: machine.id, actual_date: date, remarks: text || null, recorded_by: me });
         },
         onSuccess: () => { invalidate(); setRemarks(null); setRemarksText(''); toast.success('PM actual saved'); },
-        onError: (e) => toast.error(e.message),
+        onError: onWriteError,
     });
     const removeActual = useMutation({
         mutationFn: (id) => dmtApi.remove('pm-actual', id),
         onSuccess: () => { invalidate(); setRemarks(null); setRemarksText(''); setConfirmRemove(false); toast.success('PM actual removed'); },
-        onError: (e) => toast.error(e.message),
+        onError: onWriteError,
     });
 
-    const canEdit = mode === 'plan' ? canEditPlan : canEditActual;
     const cellClick = (machine, date) => {
-        if (mode === 'plan' && !canEditPlan) return;
-        if (mode === 'actual' && !canEditActual) return;
+        if (!editMode) return; // view mode: nothing happens on click
         const isPast = daysBetween(date, today) > 0;
-        const plan = planMap.get(`${machine.id}|${date}`);
         const actual = actualMap.get(`${machine.id}|${date}`);
         if (mode === 'plan') {
             if (isPast) return toast.error('Plan locked for past dates');
@@ -205,17 +289,9 @@ export function DmtPmSchedule() {
                         <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => shiftMonth(1)}><ChevronRight className="h-4 w-4" /></Button>
                     </div>
                     <div className="inline-flex overflow-hidden rounded-md border border-slate-200 bg-white">
-                        {['plan', 'actual'].map((m) => (
-                            <button key={m} type="button" onClick={() => setMode(m)}
-                                className={cn('h-9 px-4 text-sm font-medium capitalize', mode === m ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-100')}>
-                                {m}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="inline-flex overflow-hidden rounded-md border border-slate-200 bg-white">
-                        {['All', 'SFM', 'RFM'].map((l) => (
-                            <button key={l} type="button" onClick={() => setLineFilter(l)}
-                                className={cn('h-9 px-3 text-sm font-medium', lineFilter === l ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-100')}>
+                        {moduleTabs.map((l) => (
+                            <button key={l} type="button" onClick={() => setModuleFilter(l)}
+                                className={cn('h-9 px-3 text-sm font-medium', moduleFilter === l ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-100')}>
                                 {l}
                             </button>
                         ))}
@@ -228,26 +304,44 @@ export function DmtPmSchedule() {
                             <SelectItem value="NonCriticalOnly">Non-critical only</SelectItem>
                         </SelectContent>
                     </Select>
-                    {isAdmin && (
-                        <Button size="sm" variant="outline" className="h-9 gap-1" onClick={() => setManageOpen(true)}>
-                            <Settings className="h-4 w-4" /> Manage
+                    <LegendButton />
+                    {canEditAccess && !editing && (
+                        <Button size="sm" className="h-9 gap-1.5" onClick={() => setEditing(true)}>
+                            <Pencil className="h-4 w-4" /> Edit
                         </Button>
                     )}
                 </div>
             </div>
 
-            {isAdmin && (
-                <ManageMachinesSheet open={manageOpen} onClose={() => setManageOpen(false)} machines={allMachines} />
-            )}
+            {/* Mode banner: makes it obvious whether clicks will change anything */}
+            {editMode ? (
+                <div className="flex flex-col gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-wrap items-center gap-3">
+                        <span className="text-sm font-semibold text-blue-800">Editing</span>
+                        <div className="inline-flex overflow-hidden rounded-md border border-blue-200 bg-white">
+                            {['plan', 'actual'].map((m) => (
+                                <button key={m} type="button" onClick={() => setMode(m)}
+                                    className={cn('h-8 px-4 text-sm font-medium capitalize', mode === m ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-100')}>
+                                    {m}
+                                </button>
+                            ))}
+                        </div>
+                        <span className="text-xs text-blue-800">
+                            {mode === 'plan' ? 'Click a day to plan PM, click again to remove it. Changes save immediately.' : 'Click a day to record the PM as done. Changes save immediately.'}
+                        </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button size="sm" variant="outline" className="h-8 gap-1.5 bg-white" onClick={() => setAddOpen(true)}>
+                            <Plus className="h-4 w-4" /> Add machines
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-8 gap-1.5 bg-white" onClick={() => setEditing(false)}>
+                            <Check className="h-4 w-4" /> Done editing
+                        </Button>
+                    </div>
+                </div>
+            ) : null}
 
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-full ring-2 ring-inset ring-blue-400" /> Planned</span>
-                <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-full bg-emerald-500" /> Done on time</span>
-                <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-full bg-amber-400" /> Done delayed</span>
-                <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-full bg-rose-500" /> Overdue</span>
-                <span className="ml-2">{visible.length} machines · {monthDays.length} days</span>
-                {!canEdit && <span className="text-slate-400">· read-only</span>}
-            </div>
+            <div className="text-xs text-slate-500">{visible.length} machines · {monthDays.length} days</div>
 
             <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
                 <table className="border-collapse">
@@ -267,7 +361,14 @@ export function DmtPmSchedule() {
                     </thead>
                     <tbody>
                         {loading && <tr><td colSpan={monthDays.length + 1} className="p-6 text-center text-sm text-slate-500">Loading…</td></tr>}
-                        {!loading && Object.keys(grouped).length === 0 && (
+                        {!loading && machines.length === 0 && (
+                            <tr><td colSpan={monthDays.length + 1} className="p-6 text-center text-sm text-slate-500">
+                                {canEditAccess
+                                    ? 'No machines on the PM Schedule yet. Press Edit, then Add machines to pick them from the master machine list.'
+                                    : 'No machines on the PM Schedule yet. Someone with PM edit access needs to add them from the master machine list.'}
+                            </td></tr>
+                        )}
+                        {!loading && machines.length > 0 && Object.keys(grouped).length === 0 && (
                             <tr><td colSpan={monthDays.length + 1} className="p-6 text-center text-sm text-slate-500">No machines match the filters.</td></tr>
                         )}
                         {Object.entries(grouped).map(([groupKey, list]) => {
@@ -287,7 +388,15 @@ export function DmtPmSchedule() {
                                     {!isCollapsed && list.map((m) => (
                                         <tr key={m.id}>
                                             <td className="sticky left-0 z-10 border-b border-r bg-white px-3 py-1.5 text-xs">
-                                                {m.name}{!m.is_critical && <span className="ml-1 text-slate-300">·</span>}
+                                                <span className="flex items-center justify-between gap-1">
+                                                    <span>{m.name}{!m.is_critical && <span className="ml-1 text-slate-300">·</span>}</span>
+                                                    {editMode && (
+                                                        <button type="button" title="Remove from the PM Schedule" aria-label={`Remove ${m.name} from the PM Schedule`}
+                                                            onClick={() => setRemoveMachine(m)} className="rounded p-0.5 text-slate-300 hover:bg-rose-50 hover:text-rose-600">
+                                                            <X className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    )}
+                                                </span>
                                             </td>
                                             {monthDays.map((d) => {
                                                 const iso = toIsoDate(d);
@@ -300,7 +409,7 @@ export function DmtPmSchedule() {
                                                             type="button"
                                                             onClick={() => cellClick(m, iso)}
                                                             title={actual?.remarks || iso}
-                                                            className={cn('h-7 w-8', CELL_CLASS[state], !canEdit && 'cursor-default')}
+                                                            className={cn('h-7 w-8', CELL_CLASS[state], !editMode && 'cursor-default hover:!bg-inherit')}
                                                         />
                                                     </td>
                                                 );
@@ -313,6 +422,24 @@ export function DmtPmSchedule() {
                     </tbody>
                 </table>
             </div>
+
+            <AddMachinesDialog open={addOpen} onClose={() => setAddOpen(false)} />
+
+            <Dialog open={!!removeMachine} onOpenChange={(o) => { if (!o) setRemoveMachine(null); }}>
+                <DialogContent className="sm:max-w-[420px]">
+                    <DialogHeader><DialogTitle>Remove from the PM Schedule?</DialogTitle></DialogHeader>
+                    <p className="text-sm text-slate-600">
+                        <strong>{removeMachine?.name}</strong> will disappear from this calendar. Its plans and completed records are kept,
+                        and adding the machine back later brings them back. The machine itself stays in the master list.
+                    </p>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setRemoveMachine(null)}>Cancel</Button>
+                        <Button variant="destructive" disabled={removeFromSchedule.isPending} onClick={() => removeFromSchedule.mutate(removeMachine.id)}>
+                            Remove
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={!!remarks} onOpenChange={(o) => { if (!o) { setRemarks(null); setConfirmRemove(false); } }}>
                 <DialogContent className="sm:max-w-[440px]">

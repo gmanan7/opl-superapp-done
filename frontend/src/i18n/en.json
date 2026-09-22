@@ -43,11 +43,11 @@
     "more": "More",
     "people": "People",
     "profile": "Profile",
-    "language": "Language"
+    "language": "Language",
+    "switchModule": "Switch to {{name}}"
   },
   "login": {
-    "title": "TPM Fulcrum",
-    "subtitle": "Factory Management",
+    "title": "FOCUS",
     "tabPin": "Team Member PIN",
     "tabEmail": "Leader Login",
     "employeeId": "Employee ID",
@@ -428,6 +428,12 @@
       "addNewType": "Add new type…",
       "noDmt": "No DMT assigned",
       "machinesCount": "{{count}} machines",
+      "noJhGroup": "No JH Group",
+      "nonCritical": "Non-critical",
+      "fieldModule": "Module",
+      "allModules": "All modules",
+      "fieldCritical": "Critical machine",
+      "pmHint": "Module, machine type and the critical flag are used by the PM Schedule calendar (filters and group headings).",
       "confirmDeactivate": "Deactivate {{name}}?",
       "bulkImport": "Bulk import"
     },
@@ -522,7 +528,7 @@
     },
     "deactivate": {
       "title": "Deactivate {{name}}?",
-      "description": "They won't be able to sign in to Fulcrum. Their captured Audits and Kaizens stay on file.",
+      "description": "They won't be able to sign in to FOCUS. Their captured Audits and Kaizens stay on file.",
       "c1": "Removes their session if currently signed in",
       "c2": "Hides them from new Kaizen team pickers",
       "c3": "PIN is invalidated; reactivation requires a new PIN",

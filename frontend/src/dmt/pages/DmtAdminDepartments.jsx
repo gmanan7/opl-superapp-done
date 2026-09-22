@@ -116,12 +116,11 @@ export function DmtAdminDepartments() {
     });
     const startDelete = async (dept) => {
         try {
-            const [u, k, t] = await Promise.all([
+            const [u, k] = await Promise.all([
                 dmtApi.list('user-departments', { department_id: dept.id }),
                 dmtApi.list('kpi-master', { department_id: dept.id }),
-                dmtApi.list('tasks', { department_id: dept.id }),
             ]);
-            setDeleteDept({ dept, deps: { users: u.length, kpis: k.length, tasks: t.length } });
+            setDeleteDept({ dept, deps: { users: u.length, kpis: k.length } });
         } catch (e) {
             toast.error(e.message);
         }
@@ -207,10 +206,10 @@ export function DmtAdminDepartments() {
             <Dialog open={!!deleteDept} onOpenChange={(v) => !v && setDeleteDept(null)}>
                 <DialogContent className="sm:max-w-md">
                     <DialogHeader><DialogTitle>Delete {deleteDept?.dept.name}?</DialogTitle></DialogHeader>
-                    {deleteDept && (deleteDept.deps.users || deleteDept.deps.kpis || deleteDept.deps.tasks) ? (
+                    {deleteDept && (deleteDept.deps.users || deleteDept.deps.kpis) ? (
                         <>
                             <p className="text-sm text-slate-600">
-                                This department is still used by {deleteDept.deps.users} user link(s), {deleteDept.deps.kpis} KPI(s), {deleteDept.deps.tasks} task(s).
+                                This department is still used by {deleteDept.deps.users} user link(s), {deleteDept.deps.kpis} KPI(s).
                                 Deactivate it instead of deleting.
                             </p>
                             <DialogFooter>

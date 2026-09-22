@@ -12,7 +12,8 @@ import {
 } from '../../components/ui/select';
 import { cn } from '../../lib/utils';
 import { dmtApi } from '../lib/dmtApi';
-import { useDmtDepartments } from '../lib/useDmtKpi';
+import { useDmtTiers } from '../lib/useDmtTiers';
+import { tierLabel } from '../lib/taskExtras';
 import { useDmtWorkers } from '../lib/useDmtTasks';
 import { todayStr, addDaysStr, fmtLong } from '../lib/dmtDates';
 
@@ -53,7 +54,7 @@ export function DmtAdminAnalytics() {
     const [days, setDays] = useState('30');
     const from = useMemo(() => addDaysStr(todayStr(), -parseInt(days, 10)), [days]);
 
-    const departments = useDmtDepartments();
+    const tiers = useDmtTiers();
     const workers = useDmtWorkers();
     const tasks = useQuery({ queryKey: ['dmt', 'an-tasks'], queryFn: () => dmtApi.list('tasks', { scope: 'all' }) });
     const taskUpdates = useQuery({ queryKey: ['dmt', 'an-task-updates'], queryFn: () => dmtApi.list('task-updates', { update_type: 'due_date_change' }) });
@@ -63,7 +64,7 @@ export function DmtAdminAnalytics() {
     const invitees = useQuery({ queryKey: ['dmt', 'an-invitees'], queryFn: () => dmtApi.list('meeting-invitees') });
     const attendance = useQuery({ queryKey: ['dmt', 'an-attendance'], queryFn: () => dmtApi.list('meeting-attendance') });
 
-    const deptName = Object.fromEntries((departments.data || []).map((d) => [d.id, d.name]));
+    const groupName = Object.fromEntries((tiers.data || []).map((t) => [t.id, tierLabel(t)]));
 
     // ---- Tasks ----
     const taskStats = useMemo(() => {
@@ -72,18 +73,18 @@ export function DmtAdminAnalytics() {
         const overdue = open.filter((t) => t.due_date && t.due_date.slice(0, 10) < todayStr());
         const created = all.filter((t) => (t.created_at || '').slice(0, 10) >= from);
         const completed = all.filter((t) => t.status === 'completed' && (t.completed_at || '').slice(0, 10) >= from);
-        const byDept = {};
-        for (const t of open) { const n = deptName[t.department_id] || '—'; byDept[n] = (byDept[n] || 0) + 1; }
+        const byGroup = {};
+        for (const t of open) { const n = groupName[t.tier_id] || 'Not in any group'; byGroup[n] = (byGroup[n] || 0) + 1; }
         const byStatus = {};
         for (const t of all) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
         return {
             openCount: open.length, overdueCount: overdue.length,
             createdCount: created.length, completedCount: completed.length,
             pushCount: (taskUpdates.data || []).length,
-            deptChart: Object.entries(byDept).map(([name, count]) => ({ name, count })),
+            groupChart: Object.entries(byGroup).map(([name, count]) => ({ name, count })),
             statusChart: Object.entries(byStatus).map(([name, count]) => ({ name: name.replace('_', ' '), count })),
         };
-    }, [tasks.data, taskUpdates.data, from, deptName]);
+    }, [tasks.data, taskUpdates.data, from, groupName]);
 
     // ---- KPIs ----
     const kpiStats = useMemo(() => {
@@ -237,10 +238,10 @@ export function DmtAdminAnalytics() {
                         </div>
                         <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                             <div>
-                                <p className="mb-1 text-xs font-medium text-slate-500">Open tasks by department</p>
+                                <p className="mb-1 text-xs font-medium text-slate-500">Open tasks by group</p>
                                 <div className="h-52">
                                     <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={taskStats.deptChart}>
+                                        <BarChart data={taskStats.groupChart}>
                                             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                                             <XAxis dataKey="name" tick={{ fontSize: 9 }} />
                                             <YAxis tick={{ fontSize: 9 }} allowDecimals={false} />

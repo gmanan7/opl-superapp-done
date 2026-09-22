@@ -29,7 +29,7 @@ const MTD_AGG_LABELS = {
 };
 
 const EMPTY = {
-    department_id: '', name: '', kpi_type: 'numeric', description: '', display_order: 0,
+    department_id: '', module_id: '', name: '', kpi_type: 'numeric', description: '', display_order: 0,
     unit: '', frequency: 'daily', direction: 'higher_is_better',
     target_value: '', green_threshold: '', amber_threshold: '', mtd_aggregation: 'sum',
 };
@@ -38,7 +38,7 @@ function Label({ children }) {
     return <label className="block text-sm font-medium text-slate-700">{children}</label>;
 }
 
-function KpiFormDialog({ initial, departments, onClose }) {
+function KpiFormDialog({ initial, departments, modules, onClose }) {
     const [form, setForm] = useState(initial || EMPTY);
     const { save } = useDmtKpiMutations();
     const isEdit = !!initial?.id;
@@ -48,6 +48,7 @@ function KpiFormDialog({ initial, departments, onClose }) {
         e.preventDefault();
         const p = {
             department_id: form.department_id,
+            module_id: form.module_id || null,
             name: form.name,
             kpi_type: form.kpi_type,
             description: form.description || null,
@@ -82,7 +83,7 @@ function KpiFormDialog({ initial, departments, onClose }) {
     return (
         <DialogContent className="max-w-lg">
             <DialogHeader><DialogTitle>{isEdit ? 'Edit KPI' : 'Add KPI'}</DialogTitle></DialogHeader>
-            <form className="max-h-[70vh] space-y-4 overflow-y-auto" onSubmit={submit}>
+            <form className="space-y-4" onSubmit={submit}>
                 <div className="space-y-2">
                     <Label>Department *</Label>
                     <Select value={form.department_id} onValueChange={(v) => set('department_id', v)}>
@@ -91,6 +92,17 @@ function KpiFormDialog({ initial, departments, onClose }) {
                             {departments.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
                         </SelectContent>
                     </Select>
+                </div>
+                <div className="space-y-2">
+                    <Label>Module (optional)</Label>
+                    <Select value={form.module_id || '__none__'} onValueChange={(v) => set('module_id', v === '__none__' ? '' : v)}>
+                        <SelectTrigger className="h-11"><SelectValue placeholder="No module" /></SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="__none__">No module</SelectItem>
+                            {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                        </SelectContent>
+                    </Select>
+                    <p className="text-xs text-slate-500">If this KPI belongs to a specific line, picking it shows as e.g. "SFM Production" wherever this KPI is listed.</p>
                 </div>
                 <div className="space-y-2">
                     <Label>KPI Name *</Label>
@@ -188,11 +200,11 @@ export function DmtKpiMaster() {
     const [showCreate, setShowCreate] = useState(false);
     const { tierAtLeast } = useDmtMe();
     const canEdit = tierAtLeast('leadership');
-    const { departments, kpis } = useDmtKpiMaster(deptFilter);
+    const { departments, modules, kpis } = useDmtKpiMaster(deptFilter);
     const { remove } = useDmtKpiMutations();
 
     const openEdit = (k) => setEditKpi({
-        id: k.id, department_id: k.department_id, name: k.name, kpi_type: k.kpi_type,
+        id: k.id, department_id: k.department_id, module_id: k.module_id || '', name: k.name, kpi_type: k.kpi_type,
         description: k.description || '', display_order: k.display_order, unit: k.unit || '',
         frequency: k.frequency, direction: k.direction,
         target_value: k.target_value?.toString() || '',
@@ -242,7 +254,9 @@ export function DmtKpiMaster() {
                             {kpis.rows.map((k) => (
                                 <TableRow key={k.id} className={!k.is_active ? 'opacity-60' : ''}>
                                     <TableCell className="font-medium">{k.name}</TableCell>
-                                    <TableCell className="text-slate-500">{k.department?.name || '—'}</TableCell>
+                                    <TableCell className="text-slate-500">
+                                        {k.department ? (k.module ? `${k.module.name} ${k.department.name}` : k.department.name) : '—'}
+                                    </TableCell>
                                     <TableCell><Badge variant="outline" className="text-xs">{TYPE_LABELS[k.kpi_type]}</Badge></TableCell>
                                     <TableCell>{k.unit || '—'}</TableCell>
                                     <TableCell>{formatIndianNumber(k.target_value)}</TableCell>
@@ -273,12 +287,12 @@ export function DmtKpiMaster() {
 
             <Dialog open={showCreate} onOpenChange={setShowCreate}>
                 {showCreate && departments.data && (
-                    <KpiFormDialog departments={departments.data} onClose={() => setShowCreate(false)} />
+                    <KpiFormDialog departments={departments.data} modules={modules.data || []} onClose={() => setShowCreate(false)} />
                 )}
             </Dialog>
             <Dialog open={!!editKpi} onOpenChange={() => setEditKpi(null)}>
                 {editKpi && departments.data && (
-                    <KpiFormDialog initial={editKpi} departments={departments.data} onClose={() => setEditKpi(null)} />
+                    <KpiFormDialog initial={editKpi} departments={departments.data} modules={modules.data || []} onClose={() => setEditKpi(null)} />
                 )}
             </Dialog>
         </div>

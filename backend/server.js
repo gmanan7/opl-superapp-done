@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Pool, types } from 'pg';
 import bcrypt from 'bcryptjs';
+import { randomInt } from 'crypto';
 // Postgres DATE columns (oid 1082) are parsed into a JS Date by default, which pg then
 // serializes as a UTC midnight ISO string — shifting the calendar date backward by a day
 // for any timezone ahead of UTC (e.g. IST). Return the raw 'YYYY-MM-DD' text instead so
@@ -30,7 +31,7 @@ types.setTypeParser(1082, (val) => val);
     dotenv.config(found ? { path: found } : undefined);
 })();
 const __dirname = process.cwd();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 // Initialize Express
 export const app = express();
 app.use(cors());
@@ -490,7 +491,16 @@ app.post('/api/auth/set-language', async (req, res) => {
 app.get('/api/workers', async (req, res) => {
     try {
         if (pool) {
-            const rows = await query('SELECT *, emp_id AS id, emp_id AS employee_id FROM user_details ORDER BY name ASC');
+            // Explicit columns — never ship password_hash to the browser.
+            const rows = await query(`SELECT ud.emp_id, ud.name, ud.email, ud.role, ud.default_plant, ud.is_active, ud.created_at,
+                    ud.department_id, ud.module_id, ud.emp_id AS id, ud.emp_id AS employee_id,
+                    d.name AS department_name, m.name AS module_name,
+                    (SELECT jg.id FROM jh_groups_list l JOIN jh_group jg ON jg.id = l.jh_group_id WHERE l.emp_id = ud.emp_id ORDER BY l.created_at ASC LIMIT 1) AS jh_group_id,
+                    (SELECT jg.name FROM jh_groups_list l JOIN jh_group jg ON jg.id = l.jh_group_id WHERE l.emp_id = ud.emp_id ORDER BY l.created_at ASC LIMIT 1) AS jh_group_name
+                 FROM user_details ud
+                 LEFT JOIN departments d ON d.id = ud.department_id
+                 LEFT JOIN modules m ON m.id = ud.module_id
+                 ORDER BY ud.name ASC`);
             return res.json(rows);
         }
         res.json(mockDb.userDetails.map(u => ({ ...u, id: u.emp_id, employee_id: u.emp_id })));
@@ -514,10 +524,10 @@ app.get('/api/departments', async (req, res) => {
 app.get('/api/worker-names', async (req, res) => {
     try {
         if (pool) {
-            const rows = await query('SELECT emp_id AS id, name, emp_id AS employee_id, role, is_active FROM user_details WHERE is_active = true ORDER BY name ASC');
+            const rows = await query('SELECT emp_id AS id, name, emp_id AS employee_id, role, is_active, department_id, module_id FROM user_details WHERE is_active = true ORDER BY name ASC');
             return res.json(rows);
         }
-        res.json(mockDb.userDetails.map(w => ({ id: w.emp_id, name: w.name, employee_id: w.emp_id, role: w.role, is_active: w.is_active })));
+        res.json(mockDb.userDetails.map(w => ({ id: w.emp_id, name: w.name, employee_id: w.emp_id, role: w.role, is_active: w.is_active, department_id: w.department_id, module_id: w.module_id })));
     }
     catch {
         res.status(500).json({ error: 'Failed to fetch worker names' });
@@ -643,6 +653,212 @@ app.patch('/api/workers/:id', async (req, res) => {
     catch {
         res.status(500).json({ error: 'Failed to update worker' });
     }
+});
+// ---------------------------------------------------------------------------
+// People onboarding — the real fields behind a login: user_details (emp_id, name, email, role,
+// default_plant, department_id, module_id, password_hash) + user_plant_access + JH group
+// membership (jh_groups_list + history). BE-lead tier / admin only. Create-only: an existing
+// emp_id or email is an error, never an overwrite. A random temporary password is generated per
+// person and returned ONCE in the create response (only its bcrypt hash is stored).
+// ---------------------------------------------------------------------------
+const PEOPLE_EMP_RE = /^[A-Za-z0-9\-_/]{1,30}$/;
+const PEOPLE_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const PEOPLE_MAX_ROWS = 500;
+function genTempPassword() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let out = '';
+    for (let i = 0; i < 10; i++) out += chars[randomInt(chars.length)];
+    return out;
+}
+// Returns { empId, role } for an authorised caller, otherwise sends the error and returns null.
+async function peopleGuard(req, res) {
+    const empId = req.headers['x-worker-id'];
+    if (!empId) { res.status(401).json({ error: 'x-worker-id header is required' }); return null; }
+    if (!pool) { res.status(503).json({ error: 'Database not available' }); return null; }
+    const rows = await query('SELECT role FROM user_details WHERE emp_id = $1 AND is_active = true', [empId]);
+    const role = rows[0]?.role || '';
+    if (!(BE_LEAD_ROLES.has(role) || role === 'admin')) { res.status(403).json({ error: 'Only BE Lead / IT Lead / Leadership can manage people' }); return null; }
+    return { empId, role };
+}
+async function peopleLookups(callerEmpId) {
+    const [roles, factories, departments, modules, jhGroups, access, caller] = await Promise.all([
+        query('SELECT code, name FROM roles WHERE is_active = true ORDER BY name'),
+        query('SELECT id, code, name FROM factory WHERE is_active = true ORDER BY code'),
+        query('SELECT id, name, factory_id FROM departments WHERE is_active = true ORDER BY name'),
+        query('SELECT id, name FROM modules ORDER BY name'),
+        query('SELECT id, name, factory_id FROM jh_group WHERE is_active = true ORDER BY name'),
+        query('SELECT factory_id FROM user_plant_access WHERE emp_id = $1 AND is_active = true', [callerEmpId]),
+        query('SELECT default_plant FROM user_details WHERE emp_id = $1', [callerEmpId]),
+    ]);
+    const allowed = new Set(access.map((a) => String(a.factory_id)));
+    const dp = caller[0]?.default_plant;
+    if (dp) { const f = factories.find((x) => x.code.toLowerCase() === String(dp).toLowerCase() || x.id === dp); if (f) allowed.add(f.id); }
+    return { roles, factories: factories.filter((f) => allowed.has(f.id)), departments, modules, jhGroups };
+}
+const lc = (v) => String(v ?? '').trim().toLowerCase();
+function validatePeopleRow(raw, lk, seen, existing) {
+    const errors = [];
+    const emp_id = String(raw.emp_id ?? '').trim();
+    const name = String(raw.name ?? '').replace(/\s+/g, ' ').trim();
+    const email = String(raw.email ?? '').trim();
+    if (!emp_id) errors.push('Employee ID is required');
+    else if (!PEOPLE_EMP_RE.test(emp_id)) errors.push('Employee ID may only use letters, numbers, - _ / (max 30)');
+    else if (existing.empIds.has(emp_id.toLowerCase())) errors.push('Employee ID already exists');
+    else if (seen.empIds.has(emp_id.toLowerCase())) errors.push('Employee ID is repeated in this file');
+    if (!name) errors.push('Name is required'); else if (name.length > 120) errors.push('Name is too long (max 120)');
+    if (!email) errors.push('Email is required');
+    else {
+        if (!PEOPLE_EMAIL_RE.test(email)) errors.push('Email is not valid');
+        else if (existing.emails.has(email.toLowerCase())) errors.push('Email already exists');
+        else if (seen.emails.has(email.toLowerCase())) errors.push('Email is repeated in this file');
+    }
+    const role = lk.roles.find((r) => lc(r.code) === lc(raw.role) || lc(r.name) === lc(raw.role));
+    if (!lc(raw.role)) errors.push('Role is required'); else if (!role) errors.push(`Unknown role "${raw.role}"`);
+    const plant = lk.factories.find((f) => lc(f.code) === lc(raw.plant) || lc(f.name) === lc(raw.plant));
+    if (!lc(raw.plant)) errors.push('Plant is required'); else if (!plant) errors.push(`Unknown or not-permitted plant "${raw.plant}"`);
+    let dept = null, mod = null, jh = null;
+    if (!lc(raw.department)) errors.push('Department is required');
+    else {
+        const m = lk.departments.filter((d) => lc(d.name) === lc(raw.department));
+        dept = (plant && m.find((d) => d.factory_id === plant.id)) || m[0] || null;
+        if (!dept) errors.push(`Unknown department "${raw.department}"`);
+    }
+    if (!lc(raw.module)) errors.push('Module is required');
+    else {
+        mod = lk.modules.find((m) => lc(m.name) === lc(raw.module)) || null;
+        if (!mod) errors.push(`Unknown module "${raw.module}"`);
+    }
+    if (!lc(raw.jh_group)) errors.push('JH group is required');
+    else {
+        const m = lk.jhGroups.filter((g) => lc(g.name) === lc(raw.jh_group));
+        const inPlant = plant ? m.filter((g) => g.factory_id === plant.id) : m;
+        if (inPlant.length === 1) jh = inPlant[0];
+        else if (inPlant.length > 1) errors.push(`JH group "${raw.jh_group}" is ambiguous`);
+        else errors.push(`Unknown JH group "${raw.jh_group}"${m.length && plant ? ' for this plant' : ''}`);
+    }
+    if (emp_id) seen.empIds.add(emp_id.toLowerCase());
+    if (email) seen.emails.add(email.toLowerCase());
+    return {
+        ok: errors.length === 0, errors,
+        resolved: {
+            emp_id, name, email: email || null,
+            role: role?.code || null, role_name: role?.name || null,
+            plant_code: plant?.code || null, factory_id: plant?.id || null,
+            department_id: dept?.id || null, department_name: dept?.name || null,
+            module_id: mod?.id || null, module_name: mod?.name || null,
+            jh_group_id: jh?.id || null, jh_group_name: jh?.name || null,
+        },
+    };
+}
+app.get('/api/people/meta', async (req, res) => {
+    try {
+        const who = await peopleGuard(req, res); if (!who) return;
+        const lk = await peopleLookups(who.empId);
+        const { factories, ...rest } = lk;
+        res.json({ ...rest, plants: factories });
+    } catch (err) { console.error('people meta', err.message); res.status(500).json({ error: 'Failed to load lists' }); }
+});
+// body: { rows: [{emp_id,name,email,role,plant,department,module,jh_group}], dry_run }
+app.post('/api/people/onboard', async (req, res) => {
+    let client;
+    try {
+        const who = await peopleGuard(req, res); if (!who) return;
+        const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+        if (!rows || rows.length === 0) return res.status(400).json({ error: 'rows is required' });
+        if (rows.length > PEOPLE_MAX_ROWS) return res.status(400).json({ error: `At most ${PEOPLE_MAX_ROWS} people per import` });
+        const lk = await peopleLookups(who.empId);
+        const ids = rows.map((r) => String(r.emp_id ?? '').trim().toLowerCase()).filter(Boolean);
+        const emails = rows.map((r) => String(r.email ?? '').trim().toLowerCase()).filter(Boolean);
+        const dup = await query('SELECT lower(emp_id) AS e, lower(email) AS m FROM user_details WHERE lower(emp_id) = ANY($1) OR lower(email) = ANY($2)', [ids, emails]);
+        const existing = { empIds: new Set(dup.map((d) => d.e)), emails: new Set(dup.map((d) => d.m).filter(Boolean)) };
+        const seen = { empIds: new Set(), emails: new Set() };
+        const results = rows.map((r, i) => ({ line: r.line ?? i + 1, ...validatePeopleRow(r, lk, seen, existing) }));
+        const allOk = results.every((r) => r.ok);
+        if (req.body.dry_run) return res.json({ dry_run: true, all_ok: allOk, count: results.length, results });
+        if (!allOk) return res.status(400).json({ error: 'Some rows have problems — nothing was created', all_ok: false, results });
+        client = await pool.connect();
+        await client.query('BEGIN');
+        const out = [];
+        for (const r of results) {
+            const p = r.resolved;
+            const temp = genTempPassword();
+            const hash = await bcrypt.hash(temp, 10);
+            await client.query(
+                `INSERT INTO user_details (emp_id, name, email, password_hash, role, default_plant, is_active, department_id, module_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8)`,
+                [p.emp_id, p.name, p.email, hash, p.role, p.plant_code, p.department_id, p.module_id]);
+            await client.query('INSERT INTO user_plant_access (emp_id, factory_id, is_active) VALUES ($1, $2, true)', [p.emp_id, p.factory_id]);
+            if (p.jh_group_id) {
+                await client.query('INSERT INTO jh_groups_list (jh_group_id, emp_id, worker_name, role) VALUES ($1, $2, $3, $4)', [p.jh_group_id, p.emp_id, p.name, 'member']);
+                await client.query('INSERT INTO jh_group_membership_history (jh_group_id, emp_id, role, joined_at) VALUES ($1, $2, $3, NOW())', [p.jh_group_id, p.emp_id, 'member']);
+            }
+            out.push({ line: r.line, ok: true, errors: [], resolved: p, temp_password: temp });
+        }
+        await client.query('COMMIT');
+        res.json({ dry_run: false, all_ok: true, count: out.length, results: out });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK').catch(() => {});
+        console.error('people onboard', err.message);
+        res.status(500).json({ error: 'Onboarding failed — nothing was created' });
+    } finally { if (client) client.release(); }
+});
+// Edit details. Body may hold: name, email, role, department_id, module_id, jh_group_id ('' = none), is_active.
+app.patch('/api/people/:empId', async (req, res) => {
+    let client;
+    try {
+        const who = await peopleGuard(req, res); if (!who) return;
+        const target = req.params.empId;
+        const b = req.body || {};
+        if (target === who.empId && (b.is_active === false || (b.role !== undefined))) return res.status(400).json({ error: 'You cannot change your own role or deactivate yourself' });
+        const cur = (await query('SELECT * FROM user_details WHERE emp_id = $1', [target]))[0];
+        if (!cur) return res.status(404).json({ error: 'Person not found' });
+        const lk = await peopleLookups(who.empId);
+        const sets = []; const vals = [target];
+        const add = (col, v) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
+        if (b.name !== undefined) { const n = String(b.name).replace(/\s+/g, ' ').trim(); if (!n || n.length > 120) return res.status(400).json({ error: 'Name is required (max 120)' }); add('name', n); }
+        if (b.email !== undefined) {
+            const e = String(b.email).trim();
+            if (!e || !PEOPLE_EMAIL_RE.test(e)) return res.status(400).json({ error: 'A valid email is required' });
+            if ((await query('SELECT 1 FROM user_details WHERE lower(email) = lower($1) AND emp_id <> $2', [e, target])).length) return res.status(400).json({ error: 'Email already exists' });
+            add('email', e);
+        }
+        if (b.role !== undefined) { if (!lk.roles.some((r) => r.code === b.role)) return res.status(400).json({ error: 'Unknown role' }); add('role', b.role); }
+        if (b.department_id !== undefined) { if (!lk.departments.some((d) => d.id === b.department_id)) return res.status(400).json({ error: 'Department is required' }); add('department_id', b.department_id); }
+        if (b.module_id !== undefined) { if (!lk.modules.some((m) => m.id === b.module_id)) return res.status(400).json({ error: 'Module is required' }); add('module_id', b.module_id); }
+        if (b.is_active !== undefined) add('is_active', Boolean(b.is_active));
+        client = await pool.connect();
+        await client.query('BEGIN');
+        if (sets.length) await client.query(`UPDATE user_details SET ${sets.join(', ')} WHERE emp_id = $1`, vals);
+        if (b.jh_group_id !== undefined) {
+            if (!lk.jhGroups.some((g) => g.id === b.jh_group_id)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'JH group is required' }); }
+            const old = (await client.query('SELECT jh_group_id FROM jh_groups_list WHERE emp_id = $1', [target])).rows;
+            if (!(old.length === 1 && old[0].jh_group_id === b.jh_group_id) && !(old.length === 0 && !b.jh_group_id)) {
+                await client.query('DELETE FROM jh_groups_list WHERE emp_id = $1', [target]);
+                await client.query('UPDATE jh_group_membership_history SET left_at = NOW() WHERE emp_id = $1 AND left_at IS NULL', [target]);
+                if (b.jh_group_id) {
+                    const nm = b.name !== undefined ? String(b.name).trim() : cur.name;
+                    await client.query('INSERT INTO jh_groups_list (jh_group_id, emp_id, worker_name, role) VALUES ($1, $2, $3, $4)', [b.jh_group_id, target, nm, 'member']);
+                    await client.query('INSERT INTO jh_group_membership_history (jh_group_id, emp_id, role, joined_at) VALUES ($1, $2, $3, NOW())', [b.jh_group_id, target, 'member']);
+                }
+            }
+        }
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK').catch(() => {});
+        console.error('people patch', err.message);
+        res.status(500).json({ error: 'Failed to update person' });
+    } finally { if (client) client.release(); }
+});
+// New temporary password, shown once. (Replaces the old flow that wrote a placeholder hash.)
+app.post('/api/people/:empId/reset-password', async (req, res) => {
+    try {
+        const who = await peopleGuard(req, res); if (!who) return;
+        const temp = genTempPassword();
+        const rows = await query('UPDATE user_details SET password_hash = $2 WHERE emp_id = $1 RETURNING emp_id', [req.params.empId, await bcrypt.hash(temp, 10)]);
+        if (!rows.length) return res.status(404).json({ error: 'Person not found' });
+        res.json({ emp_id: rows[0].emp_id, temp_password: temp });
+    } catch (err) { console.error('people reset', err.message); res.status(500).json({ error: 'Failed to reset password' }); }
 });
 // 4. Org Structure & Modules
 app.get('/api/org/factories', async (req, res) => {
@@ -1512,7 +1728,7 @@ app.get('/api/machines', async (req, res) => {
     const { jh_group_id, include_inactive } = req.query;
     try {
         if (pool) {
-            let sql = `SELECT m.*, jg.name AS jh_group_name FROM machine m LEFT JOIN jh_group jg ON jg.id = m.jh_group_id WHERE ${include_inactive === 'true' ? '1=1' : 'm.is_active = true'}`;
+            let sql = `SELECT m.*, jg.name AS jh_group_name, mo.name AS module_name FROM machine m LEFT JOIN jh_group jg ON jg.id = m.jh_group_id LEFT JOIN modules mo ON mo.id = m.module_id WHERE ${include_inactive === 'true' ? '1=1' : 'm.is_active = true'}`;
             const params = [];
             if (jh_group_id) {
                 params.push(jh_group_id);
@@ -1520,7 +1736,7 @@ app.get('/api/machines', async (req, res) => {
             }
             sql += ' ORDER BY m.name ASC';
             const rows = await query(sql, params);
-            return res.json(rows.map(r => ({ ...r, jh_group: r.jh_group_name ? { name: r.jh_group_name } : null })));
+            return res.json(rows.map(r => ({ ...r, jh_group: r.jh_group_name ? { name: r.jh_group_name } : null, module: r.module_name ? { id: r.module_id, name: r.module_name } : null })));
         }
         let resList = include_inactive === 'true' ? mockDb.machines : mockDb.machines.filter(m => m.is_active);
         if (jh_group_id) {
@@ -1534,13 +1750,26 @@ app.get('/api/machines', async (req, res) => {
 });
 app.put('/api/machines/:id', async (req, res) => {
     const { id } = req.params;
-    const { name, code, jh_group_id } = req.body;
+    const { name, code, jh_group_id, module_id, is_critical, machine_type } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
+    // Module / machine type / critical are only overwritten when the caller actually sends them.
+    const sent = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
     try {
         if (pool) {
+            if (sent('module_id') && module_id) {
+                const mo = await query('SELECT 1 FROM modules WHERE id = $1', [module_id]);
+                if (!mo.length) return res.status(400).json({ error: 'Unknown module' });
+            }
             const rows = await query(
-                `UPDATE machine SET name = $1, code = $2, jh_group_id = $3 WHERE id = $4 RETURNING *`,
-                [name.trim(), code || null, jh_group_id || null, id]
+                `UPDATE machine SET name = $1, jh_group_id = $3,
+                        code = CASE WHEN $11::boolean THEN $2 ELSE code END,
+                        module_id = CASE WHEN $5::boolean THEN $6::uuid ELSE module_id END,
+                        is_critical = CASE WHEN $7::boolean THEN $8::boolean ELSE is_critical END,
+                        machine_type = CASE WHEN $9::boolean THEN $10 ELSE machine_type END
+                 WHERE id = $4 RETURNING *`,
+                [name.trim(), code || null, jh_group_id || null, id,
+                    sent('module_id'), module_id || null, sent('is_critical') && typeof is_critical === 'boolean', is_critical === true,
+                    sent('machine_type'), (machine_type || '').trim() || null, sent('code')]
             );
             if (!rows[0]) return res.status(404).json({ error: 'Machine not found' });
             return res.json(rows[0]);
@@ -1572,11 +1801,16 @@ app.patch('/api/machines/:id/active', async (req, res) => {
     }
 });
 app.post('/api/machines', async (req, res) => {
-    const { name, code, jh_group_id } = req.body;
+    const { name, code, jh_group_id, module_id, is_critical, machine_type } = req.body;
     try {
         if (pool) {
-            const rows = await query(`INSERT INTO machine (factory_id, jh_group_id, name, code)
-         VALUES ($1, $2, $3, $4) RETURNING *`, ['00000000-0000-0000-0000-000000000001', jh_group_id || null, name, code || null]);
+            if (module_id) {
+                const mo = await query('SELECT 1 FROM modules WHERE id = $1', [module_id]);
+                if (!mo.length) return res.status(400).json({ error: 'Unknown module' });
+            }
+            const rows = await query(`INSERT INTO machine (factory_id, jh_group_id, name, code, module_id, is_critical, machine_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`, ['00000000-0000-0000-0000-000000000001', jh_group_id || null, name, code || null,
+                module_id || null, is_critical === false ? false : true, (machine_type || '').trim() || null]);
             return res.json(rows[0]);
         }
         const newMac = {
@@ -8070,6 +8304,7 @@ app.post('/api/audit-occurrences/:id/close', async (req, res) => {
 // it; anyone else 403s. Only works once the occurrence is closed.
 function auditScoreLegend(min, max, scoringMode) {
     if (scoringMode === 'off') return null;
+    if (Number(min) === 0 && Number(max) === 1) return 'Yes = Good  |  No = Poor  |  combined = % of items answered Yes';
     const lo = Math.floor((Number(min) + Number(max)) / 2);
     const rng = (a, b) => (a === b ? `${a}` : `${a}–${b}`);
     return `${max} = Good  |  ${rng(lo, max - 1)} = Marginal  |  ${rng(min, lo - 1)} = Poor`;
@@ -8418,6 +8653,9 @@ async function dmtValidateWidget(body, user) {
         if (!config.chart_id) return { status: 400, error: 'A saved chart must be selected' };
         return null;
     }
+    // Open task widgets are scoped to the caller's own tasks, not a department — no
+    // department pick, no leadership-only "all departments" restriction applies here.
+    if (type === 'task_count' || type === 'task_list') return null;
     if (dmtTierAtLeast(user.tier, 'leadership')) return null;
     const deptId = config.department_id;
     if (!deptId) return { status: 403, error: 'Only leadership can add an all-departments widget' };
@@ -8435,6 +8673,12 @@ function dmtWriteGuard(cfg) {
         const u = await dmtResolveUser(req);
         if (!u) return res.status(401).json({ error: 'x-worker-id header is required' });
         req.dmtUser = u;
+        // readOnly resources are written only through their own dedicated, access-checked route.
+        if (cfg.readOnly) return res.status(405).json({ error: 'This resource is read-only here' });
+        // editGuard replaces the tier rule entirely (e.g. PM Schedule: only people BE Admin listed).
+        if (cfg.editGuard) {
+            return (await cfg.editGuard(u)) ? next() : res.status(403).json({ error: cfg.editGuardError || 'You do not have edit access' });
+        }
         if (dmtTierAtLeast(u.tier, cfg.write)) return next();
         if (cfg.engBypass && await dmtUserInDeptName(u.emp_id, 'Engineering')) return next();
         return res.status(403).json({ error: `Requires DMT ${cfg.write} tier` });
@@ -8449,31 +8693,34 @@ const DMT_RESOURCES = {
     factory:                 { table: 'factory', cols: ['name', 'code', 'location', 'is_active'], orderBy: 'name', write: 'be_lead' },
     department:              { table: 'departments', cols: ['name', 'display_order', 'is_active', 'factory_id'], orderBy: 'display_order', write: 'be_lead', factoryScoped: true },
     'user-departments':      { table: 'dmt_user_departments', cols: ['emp_id', 'department_id', 'is_primary'], orderBy: 'created_at', write: 'leadership' },
-    'kpi-master':            { table: 'dmt_kpi_master', cols: ['department_id', 'name', 'unit', 'kpi_type', 'frequency', 'direction', 'target_value', 'green_threshold', 'amber_threshold', 'display_order', 'is_active', 'description', 'mtd_aggregation', 'is_hidden_from_trends'], orderBy: 'display_order', write: 'leadership' },
-    'kpi-entries':           { table: 'dmt_kpi_entries', cols: ['kpi_id', 'reporting_date', 'actual_value', 'text_value', 'computed_status', 'meeting_id', 'submitted_by', 'is_late_entry', 'remarks'], orderBy: 'reporting_date', write: 'jh_lead' },
-    'project-tracker-items': { table: 'dmt_project_tracker_items', cols: ['kpi_id', 'department_id', 'title', 'description', 'status', 'display_order', 'created_by'], orderBy: 'display_order', write: 'jh_lead' },
+    'kpi-master':            { table: 'dmt_kpi_master', cols: ['department_id', 'module_id', 'name', 'unit', 'kpi_type', 'frequency', 'direction', 'target_value', 'green_threshold', 'amber_threshold', 'display_order', 'is_active', 'description', 'mtd_aggregation', 'is_hidden_from_trends'], orderBy: 'display_order', write: 'leadership' },
+    'kpi-entries':           { table: 'dmt_kpi_entries', cols: ['kpi_id', 'reporting_date', 'actual_value', 'text_value', 'computed_status', 'meeting_id', 'submitted_by', 'is_late_entry', 'remarks'], orderBy: 'reporting_date', write: 'jh_lead', readOnly: true },
+    'project-tracker-items': { table: 'dmt_project_tracker_items', cols: ['kpi_id', 'department_id', 'title', 'description', 'status', 'display_order', 'created_by'], orderBy: 'display_order', write: 'jh_lead',
+        validate: async (body, u, opts = {}) => {
+            if (!opts.isCreate) return null; // status edits/deletes keep the existing rules
+            const denied = await dmtKpisNotEnterableBy([body.kpi_id], u.emp_id);
+            return denied.length ? { status: 403, error: 'Only members of the group this KPI belongs to can add items to it' } : null;
+        } },
     'project-item-stage-updates': { table: 'dmt_project_item_stage_updates', cols: ['item_id', 'stage_name', 'update_note', 'reporting_date', 'updated_by'], orderBy: 'created_at', write: 'jh_lead' },
-    meetings:                { table: 'dmt_meetings', cols: ['factory_id', 'title', 'scheduled_date', 'scheduled_start_time', 'scheduled_end_time', 'actual_start', 'actual_end', 'status', 'facilitator_id', 'location', 'summary', 'created_by'], orderBy: 'scheduled_date', write: 'jh_lead' },
-    'meeting-invitees':      { table: 'dmt_meeting_invitees', cols: ['meeting_id', 'user_id', 'guest_name', 'guest_designation', 'department_id', 'is_mandatory'], orderBy: 'created_at', write: 'jh_lead' },
-    'meeting-attendance':    { table: 'dmt_meeting_attendance', cols: ['meeting_id', 'invitee_id', 'status', 'marked_by', 'remarks'], orderBy: 'marked_at', write: 'jh_lead' },
-    'meeting-discussion-points': { table: 'dmt_meeting_discussion_points', cols: ['meeting_id', 'title', 'notes', 'sequence', 'created_by'], orderBy: 'sequence', write: 'jh_lead' },
-    'meeting-decisions':     { table: 'dmt_meeting_decisions', cols: ['meeting_id', 'discussion_point_id', 'decision_text', 'linked_task_id', 'created_by'], orderBy: 'created_at', write: 'jh_lead' },
-    'meeting-templates':     { table: 'dmt_meeting_templates', cols: ['factory_id', 'name', 'description', 'default_duration_minutes', 'default_start_time', 'default_location', 'is_active', 'created_by'], orderBy: 'name', write: 'leadership', factoryScoped: true },
+    meetings:                { table: 'dmt_meetings', cols: ['factory_id', 'title', 'scheduled_date', 'scheduled_start_time', 'scheduled_end_time', 'actual_start', 'actual_end', 'status', 'facilitator_id', 'location', 'summary', 'summary_by', 'tier_id', 'series_id', 'created_by'], orderBy: 'scheduled_date', write: 'jh_lead', scoped: true, scopedIdentityCols: ['facilitator_id', 'created_by'], validate: dmtValidateMeeting, afterWrite: dmtMeetingAfter, rule: dmtMeetingRule },
+    'meeting-invitees':      { table: 'dmt_meeting_invitees', cols: ['meeting_id', 'user_id', 'guest_name', 'guest_designation', 'department_id', 'is_mandatory', 'source', 'added_by'], orderBy: 'created_at', write: 'jh_lead', afterWrite: dmtInviteeAfter, rule: dmtInviteeRule },
+    'meeting-attendance':    { table: 'dmt_meeting_attendance', cols: ['meeting_id', 'invitee_id', 'status', 'marked_by', 'remarks'], orderBy: 'marked_at', write: 'jh_lead', afterWrite: dmtAttendanceAfter, rule: dmtAttendanceRule },
+    'meeting-discussion-points': { table: 'dmt_meeting_discussion_points', cols: ['meeting_id', 'title', 'notes', 'sequence', 'created_by'], orderBy: 'sequence', write: 'jh_lead', afterWrite: dmtPointAfter, rule: dmtPointRule },
+    'meeting-decisions':     { table: 'dmt_meeting_decisions', cols: ['meeting_id', 'discussion_point_id', 'decision_text', 'linked_task_id', 'created_by'], orderBy: 'created_at', write: 'jh_lead', afterWrite: dmtDecisionAfter, rowFilter: dmtDecisionRowFilter, rule: dmtDecisionRule },
+    'meeting-templates':     { table: 'dmt_meeting_templates', cols: ['factory_id', 'name', 'description', 'default_duration_minutes', 'default_start_time', 'default_location', 'is_active', 'tier_id', 'created_by'], orderBy: 'name', write: 'leadership', factoryScoped: true },
     'meeting-template-invitees': { table: 'dmt_meeting_template_invitees', cols: ['template_id', 'user_id', 'is_mandatory'], orderBy: 'created_at', write: 'leadership' },
-    tasks:                   { table: 'dmt_tasks', cols: ['title', 'description', 'department_id', 'owner_id', 'assigned_by', 'priority', 'status', 'due_date', 'completed_at', 'resolution_note', 'origin_type', 'origin_meeting_id', 'origin_kpi_entry_id', 'is_carryover', 'is_private', 'task_group_id', 'created_by'], orderBy: 'created_at', write: 'jh_lead', scoped: true },
+    tasks:                   { table: 'dmt_tasks', cols: ['title', 'description', 'owner_id', 'assigned_by', 'priority', 'status', 'due_date', 'completed_at', 'resolution_note', 'origin_type', 'origin_meeting_id', 'origin_kpi_entry_id', 'is_carryover', 'is_private', 'tier_id', 'created_by'], orderBy: 'created_at', write: 'jh_lead', scoped: true, validate: dmtValidateTask, canModify: (row, u) => dmtCanActOnTask(row, u.emp_id) },
     'task-updates':          { table: 'dmt_task_updates', cols: ['task_id', 'previous_status', 'new_status', 'update_note', 'update_type', 'previous_due_date', 'new_due_date', 'previous_text', 'new_text', 'updated_by'], orderBy: 'created_at', write: 'jh_lead' },
     'task-due-date-history': { table: 'dmt_task_due_date_history', cols: ['task_id', 'previous_due_date', 'new_due_date', 'reason', 'changed_by'], orderBy: 'created_at', write: 'jh_lead' },
-    'task-groups':           { table: 'dmt_task_groups', cols: ['name', 'created_by', 'factory_id', 'color'], orderBy: 'name', write: 'jh_lead' },
-    'task-group-members':    { table: 'dmt_task_group_members', cols: ['group_id', 'user_id', 'added_by', 'is_leader'], orderBy: 'created_at', write: 'jh_lead' },
     'planner-items':         { table: 'dmt_planner_items', cols: ['emp_id', 'title', 'notes', 'due_date', 'is_completed', 'completed_at', 'display_order', 'recurrence_type', 'recurrence_day_of_week', 'recurrence_day_of_month', 'origin_context'], orderBy: 'display_order', write: 'jh_lead', owner: 'emp_id' },
     'dashboard-widgets':     { table: 'dmt_dashboard_widgets', cols: ['emp_id', 'widget_type', 'config', 'display_order'], orderBy: 'display_order', write: 'jh_lead', owner: 'emp_id', validate: dmtValidateWidget },
     'hidden-kpis':           { table: 'dmt_hidden_kpis', cols: ['emp_id', 'kpi_id'], orderBy: 'created_at', write: 'jh_lead', owner: 'emp_id' },
-    'pm-machines':           { table: 'dmt_pm_machines', cols: ['factory_id', 'line', 'group_name', 'name', 'is_critical', 'is_active', 'display_order'], orderBy: 'display_order', write: 'leadership' },
-    'pm-plan':               { table: 'dmt_pm_plan', cols: ['machine_id', 'planned_date', 'created_by'], orderBy: 'planned_date', write: 'module_lead' },
-    'pm-actual':             { table: 'dmt_pm_actual', cols: ['machine_id', 'actual_date', 'remarks', 'recorded_by'], orderBy: 'actual_date', write: 'module_lead', engBypass: true },
-    'pd-jobs':               { table: 'dmt_pd_jobs', cols: ['factory_id', 'title', 'customer', 'product', 'substrate', 'stage', 'feedback_note', 'previous_job_id', 'respawn_reason', 'target_dispatch_date', 'created_by', 'closed_at'], orderBy: 'created_at', write: 'module_lead' },
-    'pd-job-comments':       { table: 'dmt_pd_job_comments', cols: ['job_id', 'author_id', 'body', 'stage_at_comment'], orderBy: 'created_at', write: 'jh_lead' },
-    'pd-stage-history':      { table: 'dmt_pd_stage_history', cols: ['job_id', 'from_stage', 'to_stage', 'changed_by', 'note'], orderBy: 'changed_at', write: 'module_lead' },
+    'pm-machines':           { table: 'dmt_pm_machines', cols: ['factory_id', 'line', 'group_name', 'name', 'is_critical', 'is_active', 'display_order'], orderBy: 'display_order', write: 'leadership', readOnly: true }, // retired: PM reads the shared `machine` table
+    'pm-plan':               { table: 'dmt_pm_plan', cols: ['machine_id', 'planned_date', 'created_by'], orderBy: 'planned_date', write: 'module_lead', afterWrite: dmtPmPlanLog, editGuard: (u) => dmtCanEditPm(u), editGuardError: 'You do not have PM Schedule edit access' },
+    'pm-actual':             { table: 'dmt_pm_actual', cols: ['machine_id', 'actual_date', 'remarks', 'recorded_by'], orderBy: 'actual_date', write: 'module_lead', afterWrite: dmtPmActualLog, editGuard: (u) => dmtCanEditPm(u), editGuardError: 'You do not have PM Schedule edit access' },
+    'pd-jobs':               { table: 'dmt_pd_jobs', cols: ['factory_id', 'title', 'customer', 'product', 'substrate', 'stage', 'feedback_note', 'previous_job_id', 'respawn_reason', 'target_dispatch_date', 'created_by', 'closed_at', 'category_id'], orderBy: 'created_at', write: 'module_lead', validate: dmtValidatePdJob, afterWrite: dmtPdJobLog, editGuard: (u) => dmtCanEditPd(u), editGuardError: 'You do not have PD Cycle edit access' },
+    'pd-job-comments':       { table: 'dmt_pd_job_comments', cols: ['job_id', 'author_id', 'body', 'stage_at_comment'], orderBy: 'created_at', write: 'jh_lead', afterWrite: dmtPdCommentLog, editGuard: (u) => dmtCanEditPd(u), editGuardError: 'You do not have PD Cycle edit access' },
+    'pd-stage-history':      { table: 'dmt_pd_stage_history', cols: ['job_id', 'from_stage', 'to_stage', 'changed_by', 'note'], orderBy: 'changed_at', write: 'module_lead', readOnly: true },
     'kpi-charts':            { table: 'dmt_kpi_charts', cols: ['name', 'factory_id', 'department_id', 'size_width', 'size_height', 'chart_type', 'display_order', 'created_by'], orderBy: 'display_order', write: 'leadership' },
     'kpi-chart-kpis':        { table: 'dmt_kpi_chart_kpis', cols: ['chart_id', 'kpi_id', 'render_as', 'axis', 'color', 'display_order'], orderBy: 'display_order', write: 'leadership', pk: 'chart_id' },
     'audit-logs':            { table: 'dmt_audit_logs', cols: ['table_name', 'record_id', 'action', 'old_values', 'new_values', 'performed_by'], orderBy: 'performed_at', write: 'jh_lead' },
@@ -8509,17 +8756,40 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
             const { where, params, next } = dmtBuildFilter(cfg, q);
             let sql = `SELECT * FROM ${cfg.table}${where}`;
             const allParams = [...params];
-            // Task-board visibility scoping. The full-visibility escape hatch is
-            // ?scope=all, allowed only for factory_manager+ (Admin Task Overview).
+            // Tier-based visibility scoping (originally Task Board's, generalized so any
+            // resource with a `tier_id` column — e.g. meetings — can reuse the same rule).
+            // The full-visibility escape hatch is ?scope=all, allowed only for
+            // factory_manager+ (Admin Task Overview).
             const fullVisibility = cfg.scoped && req.query.scope === 'all' && dmtTierAtLeast(req.dmtUser.tier, 'leadership');
             if (cfg.scoped && !fullVisibility) {
                 const me = req.dmtUser.emp_id;
+                const visibleTierIds = [...(await dmtVisibleTierIdsFor(req.dmtUser))];
+                const identityCols = cfg.scopedIdentityCols || ['owner_id', 'assigned_by', 'created_by'];
+                const hasPrivate = cfg.cols.includes('is_private');
+                const idx = next;
+                const identityClause = identityCols.map((c, i) => `${c} = $${idx + i}`).join(' OR ');
+                const tierIdIdx = idx + identityCols.length;
+                // An ESCALATED task also becomes visible to the group it was escalated to — the
+                // only case where a group sees another group's task.
+                if (cfg.table === 'dmt_tasks') await ensureDmtEscalationSchema();
+                const escalationClause = cfg.table === 'dmt_tasks' && _dmtEscSchemaEnsured
+                    ? `OR (escalated_to_tier_id IS NOT NULL AND escalated_to_tier_id = ANY($${tierIdIdx}::uuid[]))`
+                    : '';
                 sql += `${where ? ' AND' : ' WHERE'} (
-                    (is_private = false AND task_group_id IS NULL)
-                    OR owner_id = $${next} OR assigned_by = $${next + 1} OR created_by = $${next + 2}
-                    OR task_group_id IN (SELECT group_id FROM dmt_task_group_members WHERE user_id = $${next + 3})
+                    (${hasPrivate ? 'is_private = false AND ' : ''}tier_id IS NULL)
+                    OR ${identityClause}
+                    OR (tier_id IS NOT NULL AND tier_id = ANY($${tierIdIdx}::uuid[]))
+                    ${escalationClause}
                 )`;
-                allParams.push(me, me, me, me);
+                allParams.push(...identityCols.map(() => me), visibleTierIds);
+            }
+            // Resource-specific "who may see this row" rule (e.g. decisions: only from meetings you are part of).
+            if (cfg.rowFilter) {
+                const f = await cfg.rowFilter(req.dmtUser, allParams.length + 1);
+                if (f) {
+                    sql += `${/where/i.test(sql) ? ' AND' : ' WHERE'} ${f.clause}`;
+                    allParams.push(...f.params);
+                }
             }
             // Every plant only ever sees/edits its own rows here — DMT used to be assumed
             // single-plant; now that its tables share the real multi-plant `factory` table,
@@ -8543,7 +8813,13 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
     // GET one
     app.get(`${base}/:id`, dmtGuard('jh_lead'), async (req, res) => {
         try {
-            const rows = await query(`SELECT * FROM ${cfg.table} WHERE ${pk} = $1 LIMIT 1`, [req.params.id]);
+            let oneSql = `SELECT * FROM ${cfg.table} WHERE ${pk} = $1`;
+            const oneParams = [req.params.id];
+            if (cfg.rowFilter) {
+                const f = await cfg.rowFilter(req.dmtUser, 2);
+                if (f) { oneSql += ` AND ${f.clause}`; oneParams.push(...f.params); }
+            }
+            const rows = await query(`${oneSql} LIMIT 1`, oneParams);
             if (!rows.length) return res.status(404).json({ error: `${resource} not found` });
             if (cfg.owner && rows[0][cfg.owner] !== req.dmtUser.emp_id) return res.status(403).json({ error: 'Not yours' });
             if (cfg.factoryScoped && String(rows[0].factory_id) !== String(await dmtUserFactoryId(req.dmtUser))) {
@@ -8563,7 +8839,12 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
             if (cfg.owner) body[cfg.owner] = req.dmtUser.emp_id;
             if (cfg.factoryScoped) body.factory_id = await dmtUserFactoryId(req.dmtUser);
             if (cfg.validate) {
-                const bad = await cfg.validate(body, req.dmtUser);
+                const bad = await cfg.validate(body, req.dmtUser, { isCreate: true });
+                if (bad) return res.status(bad.status).json({ error: bad.error });
+            }
+            // Resource-specific "who may do this" rule (may also stamp/clean fields on `body`).
+            if (cfg.rule) {
+                const bad = await cfg.rule('INSERT', { body, user: req.dmtUser });
                 if (bad) return res.status(bad.status).json({ error: bad.error });
             }
             const entries = Object.entries(body).filter(([k]) => cfg.cols.includes(k));
@@ -8576,6 +8857,7 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
                 vals
             );
             if (DMT_AUDITED.has(resource)) dmtAudit(cfg.table, rows[0]?.id, 'INSERT', null, rows[0], req.dmtUser.emp_id);
+            if (cfg.afterWrite) await cfg.afterWrite('INSERT', null, rows[0], req.dmtUser);
             res.status(201).json(rows[0]);
         } catch (err) {
             console.error(`[DMT] POST ${base}`, err.message);
@@ -8586,6 +8868,11 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
     // UPDATE (partial)
     app.patch(`${base}/:id`, dmtWriteGuard(cfg), async (req, res) => {
         try {
+            if (cfg.canModify) {
+                const row = (await query(`SELECT * FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]))[0];
+                if (!row) return res.status(404).json({ error: `${resource} not found` });
+                if (!cfg.canModify(row, req.dmtUser)) return res.status(403).json({ error: DMT_TASK_ACT_ERR });
+            }
             if (cfg.owner) {
                 const own = await query(`SELECT ${cfg.owner} FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]);
                 if (!own.length) return res.status(404).json({ error: `${resource} not found` });
@@ -8602,9 +8889,15 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
                 const bad = await cfg.validate(req.body, req.dmtUser);
                 if (bad) return res.status(bad.status).json({ error: bad.error });
             }
+            if (cfg.rule) {
+                const row = (await query(`SELECT * FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]))[0];
+                if (!row) return res.status(404).json({ error: `${resource} not found` });
+                const bad = await cfg.rule('UPDATE', { row, body: req.body, user: req.dmtUser });
+                if (bad) return res.status(bad.status).json({ error: bad.error });
+            }
             const entries = Object.entries(req.body).filter(([k]) => cfg.cols.includes(k) && k !== cfg.owner && k !== 'factory_id');
             if (!entries.length) return res.status(400).json({ error: 'No writable fields supplied' });
-            const before = DMT_AUDITED.has(resource)
+            const before = (DMT_AUDITED.has(resource) || cfg.afterWrite)
                 ? (await query(`SELECT * FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]))[0]
                 : null;
             const set = entries.map(([k], i) => `${k} = $${i + 2}`);
@@ -8614,6 +8907,7 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
             );
             if (!rows.length) return res.status(404).json({ error: `${resource} not found` });
             if (DMT_AUDITED.has(resource)) dmtAudit(cfg.table, rows[0]?.id, 'UPDATE', before, rows[0], req.dmtUser.emp_id);
+            if (cfg.afterWrite) await cfg.afterWrite('UPDATE', before, rows[0], req.dmtUser);
             res.json(rows[0]);
         } catch (err) {
             console.error(`[DMT] PATCH ${base}/:id`, err.message);
@@ -8624,19 +8918,31 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
     // DELETE
     app.delete(`${base}/:id`, dmtWriteGuard(cfg), async (req, res) => {
         try {
+            if (cfg.canModify) {
+                const row = (await query(`SELECT * FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]))[0];
+                if (row && !cfg.canModify(row, req.dmtUser)) return res.status(403).json({ error: DMT_TASK_ACT_ERR });
+            }
             if (cfg.factoryScoped) {
                 const own = await query(`SELECT factory_id FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]);
                 if (own.length && String(own[0].factory_id) !== String(await dmtUserFactoryId(req.dmtUser))) {
                     return res.status(403).json({ error: 'Not your plant' });
                 }
             }
+            if (cfg.rule) {
+                const row = (await query(`SELECT * FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]))[0];
+                if (row) {
+                    const bad = await cfg.rule('DELETE', { row, user: req.dmtUser });
+                    if (bad) return res.status(bad.status).json({ error: bad.error });
+                }
+            }
             const owned = cfg.owner ? ` AND ${cfg.owner} = $2` : '';
             const params = cfg.owner ? [req.params.id, req.dmtUser.emp_id] : [req.params.id];
-            const before = DMT_AUDITED.has(resource)
+            const before = (DMT_AUDITED.has(resource) || cfg.afterWrite)
                 ? (await query(`SELECT * FROM ${cfg.table} WHERE ${pk} = $1`, [req.params.id]))[0]
                 : null;
             await query(`DELETE FROM ${cfg.table} WHERE ${pk} = $1${owned}`, params);
             if (DMT_AUDITED.has(resource) && before) dmtAudit(cfg.table, before.id, 'DELETE', before, null, req.dmtUser.emp_id);
+            if (cfg.afterWrite && before) await cfg.afterWrite('DELETE', before, null, req.dmtUser);
             res.json({ success: true });
         } catch (err) {
             console.error(`[DMT] DELETE ${base}/:id`, err.message);
@@ -8648,6 +8954,1110 @@ for (const [resource, cfg] of Object.entries(DMT_RESOURCES)) {
 // ---------------------------------------------------------------------------
 // DMT — operations that were Supabase RPCs (now plain route logic, no DB funcs)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// PM Schedule: everyone can VIEW; BE Admin plus the people BE Admin lists here can EDIT (plan/actual).
+// Table is created lazily.
+// ---------------------------------------------------------------------------
+let _dmtPmEditorEnsured = false;
+async function ensureDmtPmEditor() {
+    if (_dmtPmEditorEnsured || !pool) return;
+    try {
+        await query(`CREATE TABLE IF NOT EXISTS dmt_pm_editor (
+            emp_id text PRIMARY KEY REFERENCES user_details(emp_id) ON DELETE CASCADE,
+            added_by text,
+            added_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await query(`CREATE TABLE IF NOT EXISTS dmt_pm_machine (
+            machine_id uuid PRIMARY KEY REFERENCES machine(id) ON DELETE CASCADE,
+            added_by text,
+            added_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        // Audit trail of every PM Schedule change (plan, actual, machines on the calendar, edit access).
+        // machine_id has no FK on purpose: history must survive a machine being deleted (name is snapshotted).
+        await query(`CREATE TABLE IF NOT EXISTS dmt_pm_log (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            event text NOT NULL CHECK (event IN ('plan_added','plan_removed','actual_recorded','actual_edited','actual_removed',
+                                                 'machine_added','machine_removed','access_granted','access_removed')),
+            machine_id uuid,
+            machine_name text,
+            event_date date,
+            old_text text,
+            new_text text,
+            target_emp_id text,
+            changed_by text NOT NULL,
+            changed_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await query('CREATE INDEX IF NOT EXISTS dmt_pm_log_at ON dmt_pm_log (changed_at DESC)');
+        _dmtPmEditorEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtPmEditor failed:', e.message);
+    }
+}
+// Never throws: an audit-write failure must not break the change that triggered it.
+async function dmtPmLog(event, d, by) {
+    try {
+        await ensureDmtPmEditor();
+        let name = d.machine_name || null;
+        if (!name && d.machine_id) name = (await query('SELECT name FROM machine WHERE id = $1', [d.machine_id]))[0]?.name || null;
+        await query(
+            `INSERT INTO dmt_pm_log (event, machine_id, machine_name, event_date, old_text, new_text, target_emp_id, changed_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [event, d.machine_id || null, name, d.event_date || null, d.old_text ?? null, d.new_text ?? null, d.target_emp_id || null, by]
+        );
+    } catch (e) {
+        console.error('[DMT] pm log failed:', e.message);
+    }
+}
+async function dmtPmPlanLog(action, before, after, u) {
+    if (action === 'INSERT') return dmtPmLog('plan_added', { machine_id: after.machine_id, event_date: after.planned_date }, u.emp_id);
+    if (action === 'DELETE' && before) return dmtPmLog('plan_removed', { machine_id: before.machine_id, event_date: before.planned_date }, u.emp_id);
+}
+async function dmtPmActualLog(action, before, after, u) {
+    if (action === 'INSERT') return dmtPmLog('actual_recorded', { machine_id: after.machine_id, event_date: after.actual_date, new_text: after.remarks }, u.emp_id);
+    if (action === 'UPDATE' && (before?.remarks || null) !== (after.remarks || null)) {
+        return dmtPmLog('actual_edited', { machine_id: after.machine_id, event_date: after.actual_date, old_text: before?.remarks, new_text: after.remarks }, u.emp_id);
+    }
+    if (action === 'DELETE' && before) return dmtPmLog('actual_removed', { machine_id: before.machine_id, event_date: before.actual_date, old_text: before.remarks }, u.emp_id);
+}
+async function dmtCanEditPm(u) {
+    // BE Admin can always edit (owner direction); everyone else must be on the list.
+    if (dmtTierAtLeast(u.tier, 'be_lead')) return true;
+    await ensureDmtPmEditor();
+    const r = await query('SELECT 1 FROM dmt_pm_editor WHERE emp_id = $1', [u.emp_id]);
+    return r.length > 0;
+}
+
+app.get('/api/dmt/pm-editors/me', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        res.json({ can_edit: await dmtCanEditPm(req.dmtUser) });
+    } catch (err) {
+        console.error('[DMT] GET pm-editors/me', err.message);
+        res.status(500).json({ error: 'Failed to check PM edit access' });
+    }
+});
+
+app.get('/api/dmt/pm-editors', dmtGuard('leadership'), async (req, res) => {
+    try {
+        await ensureDmtPmEditor();
+        const rows = await query(
+            `SELECT e.emp_id, u.name, u.role, e.added_by, ab.name AS added_by_name, e.added_at
+             FROM dmt_pm_editor e
+             JOIN user_details u ON u.emp_id = e.emp_id
+             LEFT JOIN user_details ab ON ab.emp_id = e.added_by
+             ORDER BY u.name ASC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET pm-editors', err.message);
+        res.status(500).json({ error: 'Failed to list PM edit access' });
+    }
+});
+
+app.post('/api/dmt/pm-editors', dmtGuard('be_lead'), async (req, res) => {
+    const empId = String(req.body?.emp_id || '').trim();
+    if (!empId) return res.status(400).json({ error: 'emp_id is required' });
+    try {
+        await ensureDmtPmEditor();
+        const u = (await query('SELECT emp_id, is_active FROM user_details WHERE emp_id = $1', [empId]))[0];
+        if (!u || u.is_active === false) return res.status(400).json({ error: 'Pick an active person' });
+        const rows = await query(
+            `INSERT INTO dmt_pm_editor (emp_id, added_by) VALUES ($1, $2)
+             ON CONFLICT (emp_id) DO NOTHING RETURNING *`,
+            [empId, req.dmtUser.emp_id]
+        );
+        if (rows.length) await dmtPmLog('access_granted', { target_emp_id: empId }, req.dmtUser.emp_id);
+        res.status(rows.length ? 201 : 200).json(rows[0] || { emp_id: empId, already: true });
+    } catch (err) {
+        console.error('[DMT] POST pm-editors', err.message);
+        res.status(500).json({ error: 'Failed to grant PM edit access' });
+    }
+});
+
+app.delete('/api/dmt/pm-editors/:empId', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        await ensureDmtPmEditor();
+        const gone = await query('DELETE FROM dmt_pm_editor WHERE emp_id = $1 RETURNING emp_id', [req.params.empId]);
+        if (gone.length) await dmtPmLog('access_removed', { target_emp_id: req.params.empId }, req.dmtUser.emp_id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DMT] DELETE pm-editors', err.message);
+        res.status(500).json({ error: 'Failed to remove PM edit access' });
+    }
+});
+
+// Audit trail of every PM Schedule change in a date range (default: the last 30 days).
+app.get('/api/dmt/pm-audit', dmtGuard('leadership'), async (req, res) => {
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    const to = iso.test(String(req.query.to || '')) ? String(req.query.to) : new Date().toISOString().slice(0, 10);
+    const from = iso.test(String(req.query.from || '')) ? String(req.query.from) : new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    try {
+        await ensureDmtPmEditor();
+        const rows = await query(
+            `SELECT l.id, l.event, l.machine_id, COALESCE(m.name, l.machine_name) AS machine_name,
+                    mo.name AS module, m.machine_type, l.event_date, l.old_text, l.new_text,
+                    l.target_emp_id, tu.name AS target_name, l.changed_by, cu.name AS changed_by_name, l.changed_at
+             FROM dmt_pm_log l
+             LEFT JOIN machine m ON m.id = l.machine_id
+             LEFT JOIN modules mo ON mo.id = m.module_id
+             LEFT JOIN user_details tu ON tu.emp_id = l.target_emp_id
+             LEFT JOIN user_details cu ON cu.emp_id = l.changed_by
+             WHERE l.changed_at >= $1::date AND l.changed_at < ($2::date + 1)
+             ORDER BY l.changed_at DESC LIMIT 2000`,
+            [from, to]
+        );
+        res.json({ from, to, entries: rows });
+    } catch (err) {
+        console.error('[DMT] GET pm-audit', err.message);
+        res.status(500).json({ error: 'Failed to load the PM Schedule audit trail' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// PD Cycle: everyone can VIEW; BE Admin plus the people BE Admin lists (Organisation → PD Cycle
+// Edit Access) can create / edit / move / comment / respawn. Every change lands in dmt_pd_log.
+// Tables are created lazily, same convention as the PM Schedule ones above.
+// ---------------------------------------------------------------------------
+let _dmtPdEnsured = false;
+async function ensureDmtPd() {
+    if (_dmtPdEnsured || !pool) return;
+    try {
+        await query(`CREATE TABLE IF NOT EXISTS dmt_pd_editor (
+            emp_id text PRIMARY KEY REFERENCES user_details(emp_id) ON DELETE CASCADE,
+            added_by text,
+            added_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        // job_id has no FK on purpose: history must outlive a job; number/title are snapshotted.
+        await query(`CREATE TABLE IF NOT EXISTS dmt_pd_log (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            event text NOT NULL CHECK (event IN ('job_created','job_edited','stage_changed','comment_added','respawned',
+                                                 'access_granted','access_removed')),
+            job_id uuid,
+            job_number integer,
+            job_title text,
+            from_stage text,
+            to_stage text,
+            detail text,
+            target_emp_id text,
+            changed_by text NOT NULL,
+            changed_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await query('CREATE INDEX IF NOT EXISTS dmt_pd_log_at ON dmt_pd_log (changed_at DESC)');
+        // Job categories (Cartons / Tobacco / Flexibles / Labels to start; BE Admin manages the list).
+        // Categories are deactivated, never deleted, so old jobs keep their label.
+        await query(`CREATE TABLE IF NOT EXISTS dmt_pd_category (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            name text NOT NULL,
+            is_active boolean NOT NULL DEFAULT true,
+            display_order integer NOT NULL DEFAULT 0,
+            created_by text,
+            created_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await query('CREATE UNIQUE INDEX IF NOT EXISTS dmt_pd_category_name_uq ON dmt_pd_category (lower(name))');
+        if (!(await query('SELECT 1 FROM dmt_pd_category LIMIT 1')).length) {
+            await query(`INSERT INTO dmt_pd_category (name, display_order) VALUES
+                ('Cartons',1),('Tobacco',2),('Flexibles',3),('Labels',4) ON CONFLICT DO NOTHING`);
+        }
+        await query('ALTER TABLE dmt_pd_jobs ADD COLUMN IF NOT EXISTS category_id uuid REFERENCES dmt_pd_category(id)');
+        await query('ALTER TABLE dmt_pd_log DROP CONSTRAINT IF EXISTS dmt_pd_log_event_check');
+        await query(`ALTER TABLE dmt_pd_log ADD CONSTRAINT dmt_pd_log_event_check CHECK (event IN
+            ('job_created','job_edited','stage_changed','comment_added','respawned','access_granted','access_removed',
+             'category_added','category_renamed','category_activated','category_deactivated',
+             'stage_added','stage_renamed','stage_removed','stage_reordered','stage_updated'))`);
+        // Stages used to be a fixed Postgres enum (dmt_pd_stage); they are plain text now, keyed to
+        // dmt_pd_stage_def, so BE Admin can add/remove them. Each column is converted on its own so a
+        // half-finished run is picked up again next time. Existing values are kept as they are.
+        for (const [tbl, col] of [['dmt_pd_jobs', 'stage'], ['dmt_pd_job_comments', 'stage_at_comment'],
+            ['dmt_pd_stage_history', 'from_stage'], ['dmt_pd_stage_history', 'to_stage']]) {
+            const t = (await query(`SELECT udt_name FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`, [tbl, col]))[0];
+            if (t?.udt_name === 'dmt_pd_stage') {
+                if (tbl === 'dmt_pd_jobs') await query('ALTER TABLE dmt_pd_jobs ALTER COLUMN stage DROP DEFAULT');
+                await query(`ALTER TABLE ${tbl} ALTER COLUMN ${col} TYPE text USING ${col}::text`);
+            }
+        }
+        await query(`CREATE TABLE IF NOT EXISTS dmt_pd_stage_def (
+            key text PRIMARY KEY,
+            label text NOT NULL,
+            kind text NOT NULL CHECK (kind IN ('active','closing')),
+            position integer NOT NULL DEFAULT 0,
+            requires_note boolean NOT NULL DEFAULT false,
+            early_exit boolean NOT NULL DEFAULT false,
+            tone text NOT NULL DEFAULT 'slate',
+            is_removed boolean NOT NULL DEFAULT false,
+            created_by text,
+            created_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await query('CREATE UNIQUE INDEX IF NOT EXISTS dmt_pd_stage_def_label_uq ON dmt_pd_stage_def (lower(label)) WHERE NOT is_removed');
+        if (!(await query('SELECT 1 FROM dmt_pd_stage_def LIMIT 1')).length) {
+            await query(`INSERT INTO dmt_pd_stage_def (key, label, kind, position, requires_note, early_exit, tone) VALUES
+                ('upcoming','Upcoming','active',1,false,false,'blue'),
+                ('in_process','In Process','active',2,false,false,'amber'),
+                ('processing_finished','Processing Finished','active',3,false,false,'purple'),
+                ('feedback_approved','Approved','closing',1,false,false,'emerald'),
+                ('feedback_rejected','Rejected','closing',2,true,false,'rose'),
+                ('abandoned','Abandoned','closing',3,true,true,'slate')
+                ON CONFLICT DO NOTHING`);
+        }
+        _dmtPdEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtPd failed:', e.message);
+    }
+}
+// Never throws: an audit-write failure must not break the change that triggered it.
+async function dmtPdLog(event, d, by) {
+    try {
+        await ensureDmtPd();
+        let { job_number = null, job_title = null } = d;
+        if (d.job_id && (job_number == null || job_title == null)) {
+            const j = (await query('SELECT job_number, title FROM dmt_pd_jobs WHERE id = $1', [d.job_id]))[0];
+            if (j) { job_number = job_number ?? j.job_number; job_title = job_title ?? j.title; }
+        }
+        await query(
+            `INSERT INTO dmt_pd_log (event, job_id, job_number, job_title, from_stage, to_stage, detail, target_emp_id, changed_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [event, d.job_id || null, job_number, job_title, d.from_stage || null, d.to_stage || null,
+             d.detail ?? null, d.target_emp_id || null, by]
+        );
+    } catch (e) {
+        console.error('[DMT] pd log failed:', e.message);
+    }
+}
+const PD_EDIT_FIELDS = ['title', 'customer', 'product', 'substrate', 'target_dispatch_date', 'feedback_note'];
+const pdVal = (v) => (v == null || v === '' ? '—' : String(v).slice(0, 120));
+async function dmtPdJobLog(action, before, after, u) {
+    if (action === 'INSERT') {
+        return dmtPdLog('job_created', { job_id: after.id, job_number: after.job_number, job_title: after.title, to_stage: after.stage }, u.emp_id);
+    }
+    if (action === 'UPDATE' && before) {
+        if (before.stage !== after.stage) {
+            await dmtPdLog('stage_changed', { job_id: after.id, job_number: after.job_number, job_title: after.title, from_stage: before.stage, to_stage: after.stage }, u.emp_id);
+        }
+        const changes = PD_EDIT_FIELDS.filter((f) => String(before[f] ?? '') !== String(after[f] ?? ''))
+            .map((f) => `${f.replace(/_/g, ' ')}: ${pdVal(before[f])} → ${pdVal(after[f])}`);
+        if (String(before.category_id ?? '') !== String(after.category_id ?? '')) {
+            const names = {};
+            const ids = [before.category_id, after.category_id].filter(Boolean);
+            for (const r of await query('SELECT id, name FROM dmt_pd_category WHERE id = ANY($1::uuid[])', [ids])) names[r.id] = r.name;
+            changes.push(`category: ${pdVal(names[before.category_id])} → ${pdVal(names[after.category_id])}`);
+        }
+        if (changes.length) {
+            return dmtPdLog('job_edited', { job_id: after.id, job_number: after.job_number, job_title: after.title, detail: changes.join('; ') }, u.emp_id);
+        }
+    }
+}
+async function dmtPdCommentLog(action, before, after, u) {
+    if (action === 'INSERT') return dmtPdLog('comment_added', { job_id: after.job_id, detail: String(after.body || '').slice(0, 300) }, u.emp_id);
+}
+// The stage list BE Admin manages (removed ones excluded): in-progress stages in order, then closing ones.
+async function pdStageConfig() {
+    await ensureDmtPd();
+    return query(`SELECT * FROM dmt_pd_stage_def WHERE NOT is_removed ORDER BY (kind = 'closing'), position, label`);
+}
+// Where a job in stage `key` may go: the next in-progress stage, any closing stage flagged "available from any
+// stage", and — from the LAST in-progress stage — every closing stage. `back_to` is the previous in-progress stage.
+function pdStageOptions(cfg, key) {
+    const active = cfg.filter((s) => s.kind === 'active');
+    const closing = cfg.filter((s) => s.kind === 'closing');
+    const i = active.findIndex((s) => s.key === key);
+    if (i < 0) return { forward: [], back_to: null };
+    const forward = [];
+    if (active[i + 1]) forward.push(active[i + 1].key);
+    forward.push(...closing.filter((s) => i === active.length - 1 || s.early_exit).map((s) => s.key));
+    return { forward, back_to: i > 0 ? active[i - 1].key : null };
+}
+const PD_TONES = ['blue', 'amber', 'purple', 'emerald', 'rose', 'slate', 'teal', 'indigo', 'orange', 'cyan'];
+// Runs on create and edit: a new job always starts in the first in-progress stage; the stage can't be changed
+// through a plain edit (only the Move-stage route); the category must be an ACTIVE one (or none).
+async function dmtValidatePdJob(body, u, opts = {}) {
+    await ensureDmtPd();
+    if (opts.isCreate) {
+        const first = (await pdStageConfig()).find((s) => s.kind === 'active');
+        if (!first) return { status: 400, error: 'No PD stage is set up yet' };
+        body.stage = first.key;
+        body.closed_at = null;
+    } else if (body) {
+        delete body.stage;
+        delete body.closed_at;
+    }
+    if (body?.category_id == null || body.category_id === '') return null;
+    const ok = await query('SELECT 1 FROM dmt_pd_category WHERE id::text = $1 AND is_active', [String(body.category_id)]);
+    return ok.length ? null : { status: 400, error: 'Pick an active category' };
+}
+async function dmtCanEditPd(u) {
+    // BE Admin can always edit (owner direction); everyone else must be on the list.
+    if (dmtTierAtLeast(u.tier, 'be_lead')) return true;
+    await ensureDmtPd();
+    const r = await query('SELECT 1 FROM dmt_pd_editor WHERE emp_id = $1', [u.emp_id]);
+    return r.length > 0;
+}
+// Route guard for the named PD ops (stage move, respawn): same rule as the generic resources.
+async function dmtPdGuard(req, res, next) {
+    const u = await dmtResolveUser(req);
+    if (!u) return res.status(401).json({ error: 'x-worker-id header is required' });
+    if (!(await dmtCanEditPd(u))) return res.status(403).json({ error: 'You do not have PD Cycle edit access' });
+    req.dmtUser = u;
+    next();
+}
+
+app.get('/api/dmt/pd-editors/me', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        res.json({ can_edit: await dmtCanEditPd(req.dmtUser) });
+    } catch (err) {
+        console.error('[DMT] GET pd-editors/me', err.message);
+        res.status(500).json({ error: 'Failed to check PD Cycle edit access' });
+    }
+});
+
+app.get('/api/dmt/pd-editors', dmtGuard('leadership'), async (req, res) => {
+    try {
+        await ensureDmtPd();
+        const rows = await query(
+            `SELECT e.emp_id, u.name, u.role, e.added_by, ab.name AS added_by_name, e.added_at
+             FROM dmt_pd_editor e
+             JOIN user_details u ON u.emp_id = e.emp_id
+             LEFT JOIN user_details ab ON ab.emp_id = e.added_by
+             ORDER BY u.name ASC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET pd-editors', err.message);
+        res.status(500).json({ error: 'Failed to list PD Cycle edit access' });
+    }
+});
+
+app.post('/api/dmt/pd-editors', dmtGuard('be_lead'), async (req, res) => {
+    const empId = String(req.body?.emp_id || '').trim();
+    if (!empId) return res.status(400).json({ error: 'emp_id is required' });
+    try {
+        await ensureDmtPd();
+        const u = (await query('SELECT emp_id, is_active FROM user_details WHERE emp_id = $1', [empId]))[0];
+        if (!u || u.is_active === false) return res.status(400).json({ error: 'Pick an active person' });
+        const rows = await query(
+            `INSERT INTO dmt_pd_editor (emp_id, added_by) VALUES ($1, $2)
+             ON CONFLICT (emp_id) DO NOTHING RETURNING *`,
+            [empId, req.dmtUser.emp_id]
+        );
+        if (rows.length) await dmtPdLog('access_granted', { target_emp_id: empId }, req.dmtUser.emp_id);
+        res.status(rows.length ? 201 : 200).json(rows[0] || { emp_id: empId, already: true });
+    } catch (err) {
+        console.error('[DMT] POST pd-editors', err.message);
+        res.status(500).json({ error: 'Failed to grant PD Cycle edit access' });
+    }
+});
+
+app.delete('/api/dmt/pd-editors/:empId', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        await ensureDmtPd();
+        const gone = await query('DELETE FROM dmt_pd_editor WHERE emp_id = $1 RETURNING emp_id', [req.params.empId]);
+        if (gone.length) await dmtPdLog('access_removed', { target_emp_id: req.params.empId }, req.dmtUser.emp_id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DMT] DELETE pd-editors', err.message);
+        res.status(500).json({ error: 'Failed to remove PD Cycle edit access' });
+    }
+});
+
+// Categories: everyone can read the list (the page filter + New Job dropdown); BE Admin manages it.
+app.get('/api/dmt/pd-categories', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        await ensureDmtPd();
+        res.json(await query(
+            `SELECT c.id, c.name, c.is_active, c.display_order,
+                    (SELECT count(*)::int FROM dmt_pd_jobs j WHERE j.category_id = c.id) AS job_count
+             FROM dmt_pd_category c ORDER BY c.is_active DESC, c.display_order, lower(c.name)`
+        ));
+    } catch (err) {
+        console.error('[DMT] GET pd-categories', err.message);
+        res.status(500).json({ error: 'Failed to list PD categories' });
+    }
+});
+
+app.post('/api/dmt/pd-categories', dmtGuard('be_lead'), async (req, res) => {
+    const name = String(req.body?.name || '').trim().slice(0, 60);
+    if (!name) return res.status(400).json({ error: 'Category name is required' });
+    try {
+        await ensureDmtPd();
+        if ((await query('SELECT 1 FROM dmt_pd_category WHERE lower(name) = lower($1)', [name])).length) {
+            return res.status(409).json({ error: 'A category with that name already exists' });
+        }
+        const rows = await query(
+            `INSERT INTO dmt_pd_category (name, display_order, created_by)
+             VALUES ($1, COALESCE((SELECT max(display_order) FROM dmt_pd_category), 0) + 1, $2) RETURNING *`,
+            [name, req.dmtUser.emp_id]
+        );
+        await dmtPdLog('category_added', { detail: name }, req.dmtUser.emp_id);
+        res.status(201).json(rows[0]);
+    } catch (err) {
+        console.error('[DMT] POST pd-categories', err.message);
+        res.status(500).json({ error: 'Failed to add the category' });
+    }
+});
+
+app.patch('/api/dmt/pd-categories/:id', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        await ensureDmtPd();
+        const cur = (await query('SELECT * FROM dmt_pd_category WHERE id::text = $1', [req.params.id]))[0];
+        if (!cur) return res.status(404).json({ error: 'Category not found' });
+        let name = cur.name;
+        if (req.body?.name !== undefined) {
+            name = String(req.body.name).trim().slice(0, 60);
+            if (!name) return res.status(400).json({ error: 'Category name is required' });
+            if ((await query('SELECT 1 FROM dmt_pd_category WHERE lower(name) = lower($1) AND id <> $2', [name, cur.id])).length) {
+                return res.status(409).json({ error: 'A category with that name already exists' });
+            }
+        }
+        const active = req.body?.is_active === undefined ? cur.is_active : !!req.body.is_active;
+        const rows = await query('UPDATE dmt_pd_category SET name = $2, is_active = $3 WHERE id = $1 RETURNING *', [cur.id, name, active]);
+        if (name !== cur.name) await dmtPdLog('category_renamed', { detail: `${cur.name} → ${name}` }, req.dmtUser.emp_id);
+        if (active !== cur.is_active) await dmtPdLog(active ? 'category_activated' : 'category_deactivated', { detail: name }, req.dmtUser.emp_id);
+        res.json(rows[0]);
+    } catch (err) {
+        console.error('[DMT] PATCH pd-categories', err.message);
+        res.status(500).json({ error: 'Failed to update the category' });
+    }
+});
+
+// Stages: everyone can read the list (page, filters, labels); BE Admin adds / renames / reorders / removes.
+// Removed stages stay in the list (is_removed) so old history and audit rows still show their name.
+app.get('/api/dmt/pd-stages', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        await ensureDmtPd();
+        const cfg = await pdStageConfig();
+        const all = await query(
+            `SELECT d.*, (SELECT count(*)::int FROM dmt_pd_jobs j WHERE j.stage = d.key) AS job_count
+             FROM dmt_pd_stage_def d ORDER BY d.is_removed, (d.kind = 'closing'), d.position, d.label`
+        );
+        res.json(all.map((s) => ({ ...s, ...(s.is_removed ? { forward: [], back_to: null } : pdStageOptions(cfg, s.key)) })));
+    } catch (err) {
+        console.error('[DMT] GET pd-stages', err.message);
+        res.status(500).json({ error: 'Failed to list PD stages' });
+    }
+});
+
+app.post('/api/dmt/pd-stages', dmtGuard('be_lead'), async (req, res) => {
+    const label = String(req.body?.label || '').trim().slice(0, 40);
+    const kind = req.body?.kind === 'closing' ? 'closing' : 'active';
+    if (!label) return res.status(400).json({ error: 'Stage name is required' });
+    try {
+        await ensureDmtPd();
+        if ((await query('SELECT 1 FROM dmt_pd_stage_def WHERE lower(label) = lower($1) AND NOT is_removed', [label])).length) {
+            return res.status(409).json({ error: 'A stage with that name already exists' });
+        }
+        let key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'stage';
+        const taken = new Set((await query('SELECT key FROM dmt_pd_stage_def')).map((r) => r.key));
+        for (let n = 2; taken.has(key); n++) key = `${key.replace(/_\d+$/, '')}_${n}`;
+        const pos = (await query('SELECT COALESCE(max(position), 0) + 1 AS p FROM dmt_pd_stage_def WHERE kind = $1 AND NOT is_removed', [kind]))[0].p;
+        const tone = PD_TONES[(await query('SELECT count(*)::int AS c FROM dmt_pd_stage_def'))[0].c % PD_TONES.length];
+        const rows = await query(
+            `INSERT INTO dmt_pd_stage_def (key, label, kind, position, requires_note, early_exit, tone, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+            [key, label, kind, pos, kind === 'closing' && !!req.body?.requires_note, kind === 'closing' && !!req.body?.early_exit, tone, req.dmtUser.emp_id]
+        );
+        await dmtPdLog('stage_added', { detail: `${label} (${kind === 'closing' ? 'closing' : 'in progress'})` }, req.dmtUser.emp_id);
+        res.status(201).json(rows[0]);
+    } catch (err) {
+        console.error('[DMT] POST pd-stages', err.message);
+        res.status(500).json({ error: 'Failed to add the stage' });
+    }
+});
+
+app.patch('/api/dmt/pd-stages/:key', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        await ensureDmtPd();
+        const cur = (await query('SELECT * FROM dmt_pd_stage_def WHERE key = $1 AND NOT is_removed', [req.params.key]))[0];
+        if (!cur) return res.status(404).json({ error: 'Stage not found' });
+        const by = req.dmtUser.emp_id;
+        const { label, requires_note, early_exit, move } = req.body || {};
+        if (label !== undefined) {
+            const next = String(label).trim().slice(0, 40);
+            if (!next) return res.status(400).json({ error: 'Stage name is required' });
+            if ((await query('SELECT 1 FROM dmt_pd_stage_def WHERE lower(label) = lower($1) AND NOT is_removed AND key <> $2', [next, cur.key])).length) {
+                return res.status(409).json({ error: 'A stage with that name already exists' });
+            }
+            if (next !== cur.label) {
+                await query('UPDATE dmt_pd_stage_def SET label = $2 WHERE key = $1', [cur.key, next]);
+                await dmtPdLog('stage_renamed', { detail: `${cur.label} → ${next}` }, by);
+            }
+        }
+        if (cur.kind === 'closing') {
+            for (const [col, val, text] of [['requires_note', requires_note, 'note required'], ['early_exit', early_exit, 'available from any stage']]) {
+                if (val !== undefined && !!val !== cur[col]) {
+                    await query(`UPDATE dmt_pd_stage_def SET ${col} = $2 WHERE key = $1`, [cur.key, !!val]);
+                    await dmtPdLog('stage_updated', { detail: `${cur.label}: ${text} ${val ? 'on' : 'off'}` }, by);
+                }
+            }
+        }
+        if (move === 'up' || move === 'down') {
+            const peers = await query('SELECT key FROM dmt_pd_stage_def WHERE kind = $1 AND NOT is_removed ORDER BY position, label', [cur.kind]);
+            const i = peers.findIndex((p) => p.key === cur.key);
+            const j = move === 'up' ? i - 1 : i + 1;
+            if (j >= 0 && j < peers.length) {
+                [peers[i], peers[j]] = [peers[j], peers[i]];
+                for (let n = 0; n < peers.length; n++) await query('UPDATE dmt_pd_stage_def SET position = $2 WHERE key = $1', [peers[n].key, n + 1]);
+                await dmtPdLog('stage_reordered', { detail: `${cur.label} moved ${move}` }, by);
+            }
+        }
+        res.json((await query('SELECT * FROM dmt_pd_stage_def WHERE key = $1', [cur.key]))[0]);
+    } catch (err) {
+        console.error('[DMT] PATCH pd-stages', err.message);
+        res.status(500).json({ error: 'Failed to update the stage' });
+    }
+});
+
+app.delete('/api/dmt/pd-stages/:key', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        await ensureDmtPd();
+        const cur = (await query('SELECT * FROM dmt_pd_stage_def WHERE key = $1 AND NOT is_removed', [req.params.key]))[0];
+        if (!cur) return res.status(404).json({ error: 'Stage not found' });
+        const n = (await query('SELECT count(*)::int AS c FROM dmt_pd_jobs WHERE stage = $1', [cur.key]))[0].c;
+        if (n > 0) return res.status(409).json({ error: `${n} job${n === 1 ? ' is' : 's are'} in "${cur.label}" — move ${n === 1 ? 'it' : 'them'} to another stage first` });
+        const same = (await query('SELECT count(*)::int AS c FROM dmt_pd_stage_def WHERE kind = $1 AND NOT is_removed', [cur.kind]))[0].c;
+        if (same <= 1) return res.status(409).json({ error: `Keep at least one ${cur.kind === 'closing' ? 'closing' : 'in-progress'} stage` });
+        await query('UPDATE dmt_pd_stage_def SET is_removed = true WHERE key = $1', [cur.key]);
+        await dmtPdLog('stage_removed', { detail: cur.label }, req.dmtUser.emp_id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DMT] DELETE pd-stages', err.message);
+        res.status(500).json({ error: 'Failed to remove the stage' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Meetings audit trail (Organisation → Meeting Audit Trail). Every change to a meeting and its parts — details,
+// status, notes, invitees, attendance, discussion points, decisions — is written to dmt_meeting_log by the
+// afterWrite hooks on the meeting resources. The meeting's title/date are saved on each row so the history
+// survives a meeting being deleted. Table is created lazily; the writer never throws.
+// ---------------------------------------------------------------------------
+let _dmtMeetingLogEnsured = false;
+async function ensureDmtMeetingLog() {
+    if (_dmtMeetingLogEnsured || !pool) return;
+    try {
+        await query(`CREATE TABLE IF NOT EXISTS dmt_meeting_log (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            event text NOT NULL CHECK (event IN ('meeting_created','meeting_edited','meeting_started','meeting_completed','meeting_cancelled',
+                'meeting_deleted','notes_edited','invitee_added','invitee_removed','attendance_marked','attendance_changed',
+                'point_added','point_notes_edited','point_moved','point_removed','decision_added','decision_edited','decision_removed')),
+            meeting_id uuid,
+            meeting_title text,
+            meeting_date date,
+            subject text,
+            old_text text,
+            new_text text,
+            changed_by text NOT NULL,
+            changed_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await query('CREATE INDEX IF NOT EXISTS dmt_meeting_log_at ON dmt_meeting_log (changed_at DESC)');
+        await query('CREATE INDEX IF NOT EXISTS dmt_meeting_log_meeting ON dmt_meeting_log (meeting_id)');
+        // The meeting's group, saved on each row (who may see an entry). Older rows get it from their meeting.
+        await query('ALTER TABLE dmt_meeting_log ADD COLUMN IF NOT EXISTS tier_id uuid');
+        await query(`UPDATE dmt_meeting_log l SET tier_id = m.tier_id FROM dmt_meetings m
+                     WHERE l.tier_id IS NULL AND m.id = l.meeting_id AND m.tier_id IS NOT NULL`);
+        _dmtMeetingLogEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtMeetingLog failed:', e.message);
+    }
+}
+const mlClip = (v, n = 300) => (v == null || v === '' ? null : String(v).slice(0, n));
+async function dmtMeetingLog(event, d, by) {
+    try {
+        await ensureDmtMeetingLog();
+        let { title = null, date = null, tier_id: tierId } = d;
+        if (d.meeting_id && (title == null || date == null || tierId === undefined)) {
+            const m = (await query('SELECT title, scheduled_date, tier_id FROM dmt_meetings WHERE id = $1', [d.meeting_id]))[0];
+            if (m) { title = title ?? m.title; date = date ?? m.scheduled_date; if (tierId === undefined) tierId = m.tier_id; }
+        }
+        // The meeting's group is saved on the row too, so who may see an entry survives the meeting being deleted.
+        await query(
+            `INSERT INTO dmt_meeting_log (event, meeting_id, meeting_title, meeting_date, subject, old_text, new_text, changed_by, tier_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [event, d.meeting_id || null, title, date, mlClip(d.subject, 200), mlClip(d.old_text), mlClip(d.new_text), by, tierId || null]
+        );
+    } catch (e) {
+        console.error('[DMT] meeting log failed:', e.message);
+    }
+}
+async function mlPersonName(empId) {
+    if (!empId) return null;
+    return (await query('SELECT name FROM user_details WHERE emp_id = $1', [empId]))[0]?.name || empId;
+}
+const mlDay = (v) => (v ? String(v).slice(0, 10) : '—');
+const mlTime = (v) => (v ? String(v).slice(0, 5) : '—');
+
+async function dmtMeetingAfter(action, before, after, u) {
+    if (action === 'INSERT') {
+        await dmtSyncGroupAttendees(after.id); // the group's people are on the attendance sheet from the start
+        return dmtMeetingLog('meeting_created', { meeting_id: after.id, title: after.title, date: after.scheduled_date, tier_id: after.tier_id, subject: after.title }, u.emp_id);
+    }
+    if (action === 'DELETE' && before) return dmtMeetingLog('meeting_deleted', { meeting_id: before.id, title: before.title, date: before.scheduled_date, tier_id: before.tier_id, subject: before.title }, u.emp_id);
+    if (action !== 'UPDATE' || !before) return;
+    const d = { meeting_id: after.id, title: after.title, date: after.scheduled_date, tier_id: after.tier_id };
+    const diffs = [];
+    if (before.status !== after.status) {
+        const ev = { in_progress: 'meeting_started', completed: 'meeting_completed', cancelled: 'meeting_cancelled' }[after.status];
+        if (ev) await dmtMeetingLog(ev, d, u.emp_id); else diffs.push(`status: ${before.status} → ${after.status}`);
+    }
+    if ((before.summary || '') !== (after.summary || '')) await dmtMeetingLog('notes_edited', { ...d, old_text: before.summary, new_text: after.summary }, u.emp_id);
+    if (before.title !== after.title) diffs.push(`title: ${before.title} → ${after.title}`);
+    if (mlDay(before.scheduled_date) !== mlDay(after.scheduled_date)) diffs.push(`date: ${mlDay(before.scheduled_date)} → ${mlDay(after.scheduled_date)}`);
+    if (mlTime(before.scheduled_start_time) !== mlTime(after.scheduled_start_time)) diffs.push(`start: ${mlTime(before.scheduled_start_time)} → ${mlTime(after.scheduled_start_time)}`);
+    if (mlTime(before.scheduled_end_time) !== mlTime(after.scheduled_end_time)) diffs.push(`end: ${mlTime(before.scheduled_end_time)} → ${mlTime(after.scheduled_end_time)}`);
+    if ((before.location || '') !== (after.location || '')) diffs.push(`location: ${before.location || '—'} → ${after.location || '—'}`);
+    if (before.facilitator_id !== after.facilitator_id) diffs.push(`facilitator: ${await mlPersonName(before.facilitator_id)} → ${await mlPersonName(after.facilitator_id)}`);
+    if (String(before.tier_id || '') !== String(after.tier_id || '')) diffs.push('group changed');
+    if (diffs.length) await dmtMeetingLog('meeting_edited', { ...d, new_text: diffs.join('; ') }, u.emp_id);
+}
+
+// Who an invitee row is: a registered person's name, or the guest's name.
+async function mlInviteeName(inv) {
+    if (!inv) return null;
+    return inv.user_id ? mlPersonName(inv.user_id) : (inv.guest_name || 'Guest');
+}
+// ---- Who may write in a meeting (notes, discussion points, decisions) -------------------------------------------------
+// Anyone who is part of the meeting — a member/Lead of its group, its facilitator, its creator, or module lead and above
+// (BE Admin included) — can ADD notes, discussion points and decisions while the meeting is open. Once someone has added
+// something, only THAT person can edit it: no one else, not even the facilitator or BE Admin. Tasks are not touched here.
+// Meeting details (title, date, status …) stay with the "managers": facilitator, creator, module lead and above.
+let _dmtNotesOwnerEnsured = false;
+async function ensureDmtMeetingNotesOwner() {
+    if (_dmtNotesOwnerEnsured || !pool) return;
+    try {
+        await query('ALTER TABLE dmt_meetings ADD COLUMN IF NOT EXISTS summary_by text');
+        _dmtNotesOwnerEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtMeetingNotesOwner failed:', e.message);
+    }
+}
+async function dmtMeetingAccess(u, meetingId, known) {
+    const m = known || (await query('SELECT id, tier_id, facilitator_id, created_by, status, summary FROM dmt_meetings WHERE id = $1', [meetingId]))[0];
+    if (!m) return null;
+    // the group's Co-facilitator runs its meetings together with the facilitator
+    let isCoFac = false;
+    if (m.tier_id) {
+        await ensureDmtCoFacilitator();
+        isCoFac = (await query('SELECT 1 FROM dmt_tier WHERE id = $1 AND co_facilitator_emp_id = $2', [m.tier_id, u.emp_id])).length > 0;
+    }
+    const isManager = dmtTierAtLeast(u.tier, 'module_lead') || m.facilitator_id === u.emp_id || m.created_by === u.emp_id || isCoFac;
+    const isParticipant = isManager || (!!m.tier_id && (await dmtMyGroupIds(u.emp_id)).includes(m.tier_id));
+    return { m, isManager, isParticipant, open: m.status === 'scheduled' || m.status === 'in_progress' };
+}
+const ML_CLOSED = { status: 409, error: 'This meeting is closed, so it can no longer be changed' };
+const ML_NOT_PART = { status: 403, error: 'Only people who are part of this meeting can add to it' };
+async function mlOwnedByOther(row, u, what) {
+    if (!row.created_by) return null; // older item with no recorded author: a participant may take it over
+    if (row.created_by === u.emp_id) return null;
+    return { status: 403, error: `${what} was added by ${await mlPersonName(row.created_by)} — only they can edit it` };
+}
+
+async function dmtMeetingRule(action, { row, body, user }) {
+    if (action !== 'UPDATE') return null;
+    await ensureDmtMeetingNotesOwner();
+    const acc = await dmtMeetingAccess(user, row.id, row);
+    delete body.summary_by; // set below, never taken from the client
+    const keys = Object.keys(body || {});
+    if (!acc.isManager) {
+        if (!(acc.isParticipant && keys.length > 0 && keys.every((k) => k === 'summary'))) {
+            return { status: 403, error: 'Only the facilitator, the person who created the meeting, or a module lead can change the meeting details' };
+        }
+    }
+    if ('summary' in body && String(body.summary || '') !== String(row.summary || '')) {
+        if (!acc.open) return ML_CLOSED;
+        const owner = (await query('SELECT summary_by FROM dmt_meetings WHERE id = $1', [row.id]))[0]?.summary_by;
+        if (String(row.summary || '').trim() && owner && owner !== user.emp_id) {
+            return { status: 403, error: `These notes were written by ${await mlPersonName(owner)} — only they can edit them` };
+        }
+        body.summary_by = String(body.summary || '').trim() ? user.emp_id : null;
+    }
+    return null;
+}
+async function dmtPointRule(action, { row, body, user }) {
+    if (action === 'INSERT') {
+        const acc = await dmtMeetingAccess(user, body.meeting_id);
+        if (!acc) return { status: 404, error: 'Meeting not found' };
+        if (!acc.isParticipant) return ML_NOT_PART;
+        if (!acc.open) return ML_CLOSED;
+        body.created_by = user.emp_id;
+        return null;
+    }
+    const acc = await dmtMeetingAccess(user, row.meeting_id);
+    if (!acc) return { status: 404, error: 'Meeting not found' };
+    if (!acc.open) return ML_CLOSED;
+    if (action === 'UPDATE') {
+        delete body.created_by;
+        const keys = Object.keys(body || {});
+        // re-ordering the list doesn't change anyone's content, so any participant may do it
+        if (keys.length > 0 && keys.every((k) => k === 'sequence')) return acc.isParticipant ? null : ML_NOT_PART;
+        if (!acc.isParticipant) return ML_NOT_PART;
+        const other = await mlOwnedByOther(row, user, 'This discussion point');
+        if (other) return other;
+        if (!row.created_by) body.created_by = user.emp_id;
+        return null;
+    }
+    if (!acc.isParticipant) return ML_NOT_PART;
+    return mlOwnedByOther(row, user, 'This discussion point');
+}
+async function dmtDecisionRule(action, { row, body, user }) {
+    if (action === 'INSERT') {
+        const acc = await dmtMeetingAccess(user, body.meeting_id);
+        if (!acc) return { status: 404, error: 'Meeting not found' };
+        if (!acc.isParticipant) return ML_NOT_PART;
+        if (!acc.open) return ML_CLOSED;
+        body.created_by = user.emp_id;
+        return null;
+    }
+    const acc = await dmtMeetingAccess(user, row.meeting_id);
+    if (!acc) return { status: 404, error: 'Meeting not found' };
+    if (action === 'UPDATE') {
+        delete body.created_by;
+        const keys = Object.keys(body || {});
+        // linking a task to a decision is part of raising tasks, which has no restriction for participants
+        if (keys.length > 0 && keys.every((k) => k === 'linked_task_id')) return acc.isParticipant ? null : ML_NOT_PART;
+    }
+    if (!acc.open) return ML_CLOSED;
+    if (!acc.isParticipant) return ML_NOT_PART;
+    const other = await mlOwnedByOther(row, user, 'This decision');
+    if (other) return other;
+    if (action === 'UPDATE' && !row.created_by) body.created_by = user.emp_id;
+    return null;
+}
+
+// ---- The attendance sheet -----------------------------------------------------------------------------------------------
+// A meeting's sheet is its group's people — members, the Lead, the Co-facilitator and the meeting's facilitator — kept in
+// dmt_meeting_invitees with source 'group' (written straight to the table, so it is not audited as "invitee added"), plus
+// "extras": people outside the group whom the facilitator / co-facilitator add for THAT ONE meeting (source 'extra'). Each
+// meeting of a recurring series is its own row, so an extra is never carried across the series.
+let _dmtSheetEnsured = false;
+async function ensureDmtAttendeeSheet() {
+    if (_dmtSheetEnsured || !pool) return;
+    try {
+        await query("ALTER TABLE dmt_meeting_invitees ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'extra'");
+        await query('ALTER TABLE dmt_meeting_invitees ADD COLUMN IF NOT EXISTS added_by text');
+        _dmtSheetEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtAttendeeSheet failed:', e.message);
+        return;
+    }
+    try { // best effort: one row per person per meeting
+        await query('CREATE UNIQUE INDEX IF NOT EXISTS dmt_meeting_invitees_meeting_user ON dmt_meeting_invitees (meeting_id, user_id) WHERE user_id IS NOT NULL');
+    } catch (e) { console.error('dmt_meeting_invitees unique index skipped:', e.message); }
+}
+async function dmtGroupPeople(tierId, facilitatorId) {
+    await ensureDmtCoFacilitator();
+    const ids = new Set();
+    if (tierId) {
+        for (const r of await query('SELECT emp_id FROM dmt_tier_member WHERE tier_id = $1', [tierId])) ids.add(r.emp_id);
+        const t = (await query('SELECT lead_emp_id, co_facilitator_emp_id FROM dmt_tier WHERE id = $1', [tierId]))[0];
+        if (t?.lead_emp_id) ids.add(t.lead_emp_id);
+        if (t?.co_facilitator_emp_id) ids.add(t.co_facilitator_emp_id);
+    }
+    if (facilitatorId) ids.add(facilitatorId);
+    const list = [...ids];
+    if (!list.length) return [];
+    return (await query('SELECT emp_id FROM user_details WHERE emp_id = ANY($1::text[]) AND is_active = true', [list])).map((r) => r.emp_id);
+}
+// Bring an OPEN meeting's sheet in line with its group: add missing people, relabel, drop people who left the group
+// (only if nothing was marked for them). Never throws.
+async function dmtSyncGroupAttendees(meetingId) {
+    try {
+        await ensureDmtAttendeeSheet();
+        const m = (await query('SELECT id, tier_id, status, facilitator_id FROM dmt_meetings WHERE id = $1', [meetingId]))[0];
+        if (!m || !m.tier_id || !(m.status === 'scheduled' || m.status === 'in_progress')) return { added: 0, removed: 0 };
+        const people = await dmtGroupPeople(m.tier_id, m.facilitator_id);
+        const have = new Set((await query('SELECT user_id FROM dmt_meeting_invitees WHERE meeting_id = $1 AND user_id IS NOT NULL', [meetingId])).map((r) => r.user_id));
+        let added = 0;
+        for (const p of people.filter((x) => !have.has(x))) {
+            await query(
+                `INSERT INTO dmt_meeting_invitees (meeting_id, user_id, is_mandatory, source)
+                 SELECT $1, $2, true, 'group' WHERE NOT EXISTS (SELECT 1 FROM dmt_meeting_invitees WHERE meeting_id = $1 AND user_id = $2)`,
+                [meetingId, p]
+            );
+            added += 1;
+        }
+        await query(`UPDATE dmt_meeting_invitees SET source = 'group' WHERE meeting_id = $1 AND user_id = ANY($2::text[]) AND source <> 'group'`, [meetingId, people]);
+        const gone = await query(
+            `DELETE FROM dmt_meeting_invitees i
+              WHERE i.meeting_id = $1 AND i.source = 'group' AND i.user_id IS NOT NULL AND NOT (i.user_id = ANY($2::text[]))
+                AND NOT EXISTS (SELECT 1 FROM dmt_meeting_attendance a WHERE a.invitee_id = i.id)
+              RETURNING i.id`,
+            [meetingId, people]
+        );
+        return { added, removed: gone.length };
+    } catch (e) {
+        console.error('[DMT] sync attendees failed:', e.message);
+        return { added: 0, removed: 0 };
+    }
+}
+app.post('/api/dmt/meetings/:id/sync-attendees', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const acc = await dmtMeetingAccess(req.dmtUser, req.params.id);
+        if (!acc) return res.status(404).json({ error: 'Meeting not found' });
+        if (!acc.isParticipant) return res.status(403).json(ML_NOT_PART);
+        res.json(await dmtSyncGroupAttendees(req.params.id));
+    } catch (err) {
+        console.error('[DMT] POST sync-attendees', err.message);
+        res.status(500).json({ error: 'Failed to update the attendance list' });
+    }
+});
+
+// Who may change the sheet: the facilitator, co-facilitator (and creator / module lead+) add extras and mark anyone;
+// everyone else on the sheet marks only their own name. Nothing changes once the meeting is closed.
+async function dmtInviteeRule(action, { row, body, user }) {
+    await ensureDmtAttendeeSheet();
+    const acc = await dmtMeetingAccess(user, action === 'INSERT' ? body.meeting_id : row.meeting_id);
+    if (!acc) return { status: 404, error: 'Meeting not found' };
+    if (!acc.isManager) return { status: 403, error: 'Only the facilitator or co-facilitator can change who is on the attendance list' };
+    if (action === 'UPDATE') return { status: 403, error: 'People on the attendance list cannot be edited' };
+    if (!acc.open) return ML_CLOSED;
+    if (action === 'INSERT') {
+        if (!body.user_id) return { status: 400, error: 'Pick a person to add' };
+        if ((await dmtGroupPeople(acc.m.tier_id, acc.m.facilitator_id)).includes(body.user_id)) {
+            return { status: 409, error: "This person is part of the meeting's group, so they are on the list already" };
+        }
+        if ((await query('SELECT 1 FROM dmt_meeting_invitees WHERE meeting_id = $1 AND user_id = $2', [body.meeting_id, body.user_id])).length) {
+            return { status: 409, error: 'This person is already on the list' };
+        }
+        body.source = 'extra'; // only ever for this one meeting
+        body.added_by = user.emp_id;
+        delete body.guest_name; delete body.guest_designation; delete body.department_id;
+        if (body.is_mandatory === undefined) body.is_mandatory = false;
+        return null;
+    }
+    if (row.source === 'group') return { status: 409, error: "People from the meeting's group cannot be removed here" };
+    if ((await query('SELECT 1 FROM dmt_meeting_attendance WHERE invitee_id = $1', [row.id])).length) {
+        return { status: 409, error: 'Attendance was already marked for this person' };
+    }
+    return null;
+}
+async function dmtAttendanceRule(action, { row, body, user }) {
+    const inviteeId = action === 'INSERT' ? body.invitee_id : row.invitee_id;
+    const inv = (await query('SELECT id, meeting_id, user_id FROM dmt_meeting_invitees WHERE id = $1', [inviteeId]))[0];
+    if (!inv) return { status: 404, error: 'Person not found on this meeting' };
+    const acc = await dmtMeetingAccess(user, inv.meeting_id);
+    if (!acc) return { status: 404, error: 'Meeting not found' };
+    if (!acc.open) return ML_CLOSED;
+    const ownName = !!inv.user_id && inv.user_id === user.emp_id;
+    if (action === 'DELETE') return acc.isManager ? null : { status: 403, error: 'Only the facilitator or co-facilitator can remove attendance' };
+    if (!acc.isManager && !ownName) return { status: 403, error: 'You can only mark your own attendance' };
+    if (action === 'INSERT') { body.meeting_id = inv.meeting_id; body.marked_by = user.emp_id; }
+    else { delete body.invitee_id; delete body.meeting_id; delete body.marked_by; }
+    return null;
+}
+
+async function dmtInviteeAfter(action, before, after, u) {
+    const row = after || before;
+    if (!row) return;
+    if (action === 'INSERT') {
+        // Only the people added by hand (extras) come through here — the group's people are written by the sync, unaudited.
+        return dmtMeetingLog('invitee_added', { meeting_id: row.meeting_id, subject: await mlInviteeName(row) }, u.emp_id);
+    }
+    if (action === 'DELETE') return dmtMeetingLog('invitee_removed', { meeting_id: row.meeting_id, subject: await mlInviteeName(row) }, u.emp_id);
+}
+async function dmtAttendanceAfter(action, before, after, u) {
+    const row = after || before;
+    if (!row) return;
+    const inv = (await query('SELECT user_id, guest_name FROM dmt_meeting_invitees WHERE id = $1', [row.invitee_id]))[0];
+    const who = await mlInviteeName(inv);
+    if (action === 'INSERT') return dmtMeetingLog('attendance_marked', { meeting_id: row.meeting_id, subject: who, new_text: after.status }, u.emp_id);
+    if (action === 'UPDATE' && before && before.status !== after.status) {
+        return dmtMeetingLog('attendance_changed', { meeting_id: row.meeting_id, subject: who, old_text: before.status, new_text: after.status }, u.emp_id);
+    }
+}
+async function dmtPointAfter(action, before, after, u) {
+    const row = after || before;
+    if (!row) return;
+    if (action === 'INSERT') return dmtMeetingLog('point_added', { meeting_id: row.meeting_id, subject: after.title }, u.emp_id);
+    if (action === 'DELETE') return dmtMeetingLog('point_removed', { meeting_id: row.meeting_id, subject: before.title }, u.emp_id);
+    if (action === 'UPDATE' && before) {
+        if ((before.notes || '') !== (after.notes || '')) return dmtMeetingLog('point_notes_edited', { meeting_id: row.meeting_id, subject: after.title, old_text: before.notes, new_text: after.notes }, u.emp_id);
+        if (before.sequence !== after.sequence) return dmtMeetingLog('point_moved', { meeting_id: row.meeting_id, subject: after.title }, u.emp_id);
+    }
+}
+// Who may SEE a decision: only BE Admin sees every meeting's decisions. Everyone else sees decisions of meetings they are
+// part of — a meeting of an active group they are a member/Lead of, or one they run (facilitator) or created. Being
+// leadership tier, or on the Task Board Overview list, gives no extra view here. Returns { clause, params } to AND
+// onto the query (placeholders start at `startIdx`), or null for "no restriction".
+// Every group can have a Co-facilitator (Organisation → Tiers): with the group's Lead — who normally facilitates its
+// meetings — they run the group's meetings. Column is created lazily and at boot.
+let _dmtCoFacEnsured = false;
+async function ensureDmtCoFacilitator() {
+    if (_dmtCoFacEnsured || !pool) return;
+    try {
+        await query('ALTER TABLE dmt_tier ADD COLUMN IF NOT EXISTS co_facilitator_emp_id text');
+        _dmtCoFacEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtCoFacilitator failed:', e.message);
+    }
+}
+// The active groups (tiers) a person is part of: a member, the Lead, or the Co-facilitator.
+async function dmtMyGroupIds(empId) {
+    await ensureDmtCoFacilitator();
+    const mine = new Set((await query(
+        `SELECT m.tier_id FROM dmt_tier_member m JOIN dmt_tier t ON t.id = m.tier_id WHERE m.emp_id = $1 AND t.is_active`, [empId]
+    )).map((r) => r.tier_id));
+    for (const t of await query('SELECT id FROM dmt_tier WHERE (lead_emp_id = $1 OR co_facilitator_emp_id = $1) AND is_active', [empId])) mine.add(t.id);
+    return [...mine];
+}
+async function dmtDecisionRowFilter(u, startIdx) {
+    if (dmtTierAtLeast(u.tier, 'be_lead')) return null;
+    return {
+        clause: `meeting_id IN (SELECT id FROM dmt_meetings WHERE facilitator_id = $${startIdx} OR created_by = $${startIdx}
+                                OR (tier_id IS NOT NULL AND tier_id = ANY($${startIdx + 1}::uuid[])))`,
+        params: [u.emp_id, await dmtMyGroupIds(u.emp_id)],
+    };
+}
+async function dmtDecisionAfter(action, before, after, u) {
+    const row = after || before;
+    if (!row) return;
+    if (action === 'INSERT') return dmtMeetingLog('decision_added', { meeting_id: row.meeting_id, subject: after.decision_text }, u.emp_id);
+    if (action === 'DELETE') return dmtMeetingLog('decision_removed', { meeting_id: row.meeting_id, subject: before.decision_text }, u.emp_id);
+    if (action === 'UPDATE' && before && before.decision_text !== after.decision_text) {
+        return dmtMeetingLog('decision_edited', { meeting_id: row.meeting_id, subject: after.decision_text, old_text: before.decision_text, new_text: after.decision_text }, u.emp_id);
+    }
+}
+
+// Meeting audit trail in a date range (default: last 30 days); optional ?meeting_id= for one meeting's full story.
+app.get('/api/dmt/meeting-audit', dmtGuard('leadership'), async (req, res) => {
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    const to = iso.test(String(req.query.to || '')) ? String(req.query.to) : new Date().toISOString().slice(0, 10);
+    const from = iso.test(String(req.query.from || '')) ? String(req.query.from) : new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const one = String(req.query.meeting_id || '');
+    try {
+        await ensureDmtMeetingLog();
+        const params = [from, to];
+        let extra = '';
+        if (/^[0-9a-f-]{36}$/i.test(one)) { params.push(one); extra = ` AND l.meeting_id::text = $${params.length}`; }
+        // Only BE Admin sees every meeting's trail. Anyone else who can open this page (leadership tier) sees just the
+        // trail of meetings of the groups they are part of, plus meetings they run or created.
+        if (!dmtTierAtLeast(req.dmtUser.tier, 'be_lead')) {
+            params.push(req.dmtUser.emp_id, await dmtMyGroupIds(req.dmtUser.emp_id));
+            const a = params.length - 1;
+            extra += ` AND ((m.id IS NOT NULL AND (m.facilitator_id = $${a} OR m.created_by = $${a}))
+                          OR COALESCE(m.tier_id, l.tier_id) = ANY($${a + 1}::uuid[]))`;
+        }
+        const rows = await query(
+            `SELECT l.id, l.event, l.meeting_id, COALESCE(m.title, l.meeting_title) AS meeting_title,
+                    COALESCE(m.scheduled_date, l.meeting_date) AS meeting_date, COALESCE(m.tier_id, l.tier_id) AS tier_id,
+                    l.subject, l.old_text, l.new_text,
+                    l.changed_by, cu.name AS changed_by_name, l.changed_at
+             FROM dmt_meeting_log l
+             LEFT JOIN dmt_meetings m ON m.id = l.meeting_id
+             LEFT JOIN user_details cu ON cu.emp_id = l.changed_by
+             WHERE l.changed_at >= $1::date AND l.changed_at < ($2::date + 1)${extra}
+             ORDER BY l.changed_at DESC LIMIT 3000`,
+            params
+        );
+        res.json({ from, to, entries: rows });
+    } catch (err) {
+        console.error('[DMT] GET meeting-audit', err.message);
+        res.status(500).json({ error: 'Failed to load the meeting audit trail' });
+    }
+});
+
+// Audit trail of every PD Cycle change in a date range (default: the last 30 days).
+app.get('/api/dmt/pd-audit', dmtGuard('leadership'), async (req, res) => {
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    const to = iso.test(String(req.query.to || '')) ? String(req.query.to) : new Date().toISOString().slice(0, 10);
+    const from = iso.test(String(req.query.from || '')) ? String(req.query.from) : new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    try {
+        await ensureDmtPd();
+        const rows = await query(
+            `SELECT l.id, l.event, l.job_id, COALESCE(j.job_number, l.job_number) AS job_number,
+                    COALESCE(j.title, l.job_title) AS job_title, j.customer, pc.name AS category,
+                    l.from_stage, l.to_stage, l.detail,
+                    l.target_emp_id, tu.name AS target_name, l.changed_by, cu.name AS changed_by_name, l.changed_at
+             FROM dmt_pd_log l
+             LEFT JOIN dmt_pd_jobs j ON j.id = l.job_id
+             LEFT JOIN dmt_pd_category pc ON pc.id = j.category_id
+             LEFT JOIN user_details tu ON tu.emp_id = l.target_emp_id
+             LEFT JOIN user_details cu ON cu.emp_id = l.changed_by
+             WHERE l.changed_at >= $1::date AND l.changed_at < ($2::date + 1)
+             ORDER BY l.changed_at DESC LIMIT 2000`,
+            [from, to]
+        );
+        res.json({ from, to, entries: rows });
+    } catch (err) {
+        console.error('[DMT] GET pd-audit', err.message);
+        res.status(500).json({ error: 'Failed to load the PD Cycle audit trail' });
+    }
+});
+
+// The PM calendar shows only machines someone SELECTED from the shared `machine` table
+// (MDM → Machines) — not every machine automatically. `machine_type` is the PM group heading;
+// `module` and `is_critical` drive the filters.
+app.get('/api/dmt/pm-machine-list', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        await ensureDmtPmEditor();
+        const rows = await query(
+            `SELECT m.id, m.name, m.is_critical, m.is_active, m.display_order,
+                    mo.name AS module, m.machine_type,
+                    COALESCE(NULLIF(btrim(m.machine_type), ''), 'No machine type') AS group_name,
+                    jg.name AS jh_group_name
+             FROM dmt_pm_machine s
+             JOIN machine m ON m.id = s.machine_id
+             LEFT JOIN modules mo ON mo.id = m.module_id
+             LEFT JOIN jh_group jg ON jg.id = m.jh_group_id
+             ORDER BY m.display_order ASC, m.name ASC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET pm-machine-list', err.message);
+        res.status(500).json({ error: 'Failed to load machines' });
+    }
+});
+
+// Picker source: every active machine in the master, flagged with whether it is already on the calendar.
+app.get('/api/dmt/pm-machine-master', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        if (!(await dmtCanEditPm(req.dmtUser))) return res.status(403).json({ error: 'You do not have PM Schedule edit access' });
+        const rows = await query(
+            `SELECT m.id, m.name, mo.name AS module, m.machine_type, m.is_critical, jg.name AS jh_group_name,
+                    (s.machine_id IS NOT NULL) AS in_schedule
+             FROM machine m
+             LEFT JOIN modules mo ON mo.id = m.module_id
+             LEFT JOIN jh_group jg ON jg.id = m.jh_group_id
+             LEFT JOIN dmt_pm_machine s ON s.machine_id = m.id
+             WHERE m.is_active = true
+             ORDER BY m.name ASC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET pm-machine-master', err.message);
+        res.status(500).json({ error: 'Failed to load the machine master' });
+    }
+});
+
+app.post('/api/dmt/pm-machine-select', dmtGuard('jh_lead'), async (req, res) => {
+    const ids = [...new Set((Array.isArray(req.body?.machine_ids) ? req.body.machine_ids : []).filter(Boolean))];
+    if (!ids.length) return res.status(400).json({ error: 'machine_ids[] is required' });
+    try {
+        if (!(await dmtCanEditPm(req.dmtUser))) return res.status(403).json({ error: 'You do not have PM Schedule edit access' });
+        // Only real, active machines from the master can be added.
+        const ok = await query('SELECT id FROM machine WHERE id = ANY($1::uuid[]) AND is_active = true', [ids]);
+        if (ok.length !== ids.length) return res.status(400).json({ error: 'Some machines are not active machines in the master list' });
+        const added = await query(
+            `INSERT INTO dmt_pm_machine (machine_id, added_by)
+             SELECT unnest($1::uuid[]), $2 ON CONFLICT (machine_id) DO NOTHING RETURNING machine_id`,
+            [ids, req.dmtUser.emp_id]
+        );
+        for (const a of added) await dmtPmLog('machine_added', { machine_id: a.machine_id }, req.dmtUser.emp_id);
+        res.status(201).json({ added: added.length, already_there: ids.length - added.length });
+    } catch (err) {
+        console.error('[DMT] POST pm-machine-select', err.message);
+        res.status(500).json({ error: 'Failed to add machines to the PM Schedule' });
+    }
+});
+
+// Takes a machine OFF the calendar. Its plan/actual history is kept (re-adding brings it back).
+app.delete('/api/dmt/pm-machine-select/:machineId', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        if (!(await dmtCanEditPm(req.dmtUser))) return res.status(403).json({ error: 'You do not have PM Schedule edit access' });
+        const gone = await query('DELETE FROM dmt_pm_machine WHERE machine_id = $1 RETURNING machine_id', [req.params.machineId]);
+        if (gone.length) await dmtPmLog('machine_removed', { machine_id: req.params.machineId }, req.dmtUser.emp_id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DMT] DELETE pm-machine-select', err.message);
+        res.status(500).json({ error: 'Failed to remove the machine from the PM Schedule' });
+    }
+});
 
 // who am I, in DMT terms
 app.get('/api/dmt/me', dmtGuard('jh_lead'), async (req, res) => {
@@ -8667,25 +10077,57 @@ app.get('/api/dmt/me', dmtGuard('jh_lead'), async (req, res) => {
 app.post('/api/dmt/kpi-entries/upsert', dmtGuard('jh_lead'), async (req, res) => {
     const rows = Array.isArray(req.body) ? req.body : req.body?.rows;
     if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'rows[] is required' });
+    // Never silently skip: a row without a KPI or date means the client is broken, not "saved".
+    if (rows.some((r) => !r.kpi_id || !r.reporting_date)) return res.status(400).json({ error: 'Every row needs kpi_id and reporting_date' });
     try {
+        const denied = await dmtKpisNotEnterableBy(rows.map((r) => r.kpi_id), req.dmtUser.emp_id);
+        if (denied.length) {
+            return res.status(403).json({ error: 'Only members of the group this KPI belongs to can enter its values', kpi_ids: denied });
+        }
+        await ensureDmtKpiEntryLog();
+        const me = req.dmtUser.emp_id;
+        const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+        const txt = (v) => (v === null || v === undefined || String(v).trim() === '' ? null : String(v).trim());
         const saved = [];
         for (const r of rows) {
-            if (!r.kpi_id || !r.reporting_date) continue;
+            const actual = num(r.actual_value), text = txt(r.text_value), remarks = txt(r.remarks);
+            if (actual === null && text === null) continue; // nothing entered — never create a blank "submitted" row
+            const prev = (await query('SELECT * FROM dmt_kpi_entries WHERE kpi_id = $1 AND reporting_date = $2', [r.kpi_id, r.reporting_date]))[0];
+            const prevHasValue = prev && (num(prev.actual_value) !== null || txt(prev.text_value) !== null);
+            if (!prevHasValue) {
+                // First real submission for this KPI + day (also fills an old blank placeholder row).
+                const out = await query(
+                    `INSERT INTO dmt_kpi_entries
+                       (kpi_id, reporting_date, actual_value, text_value, computed_status, submitted_by, is_late_entry, remarks)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                     ON CONFLICT (kpi_id, reporting_date) DO UPDATE SET
+                       actual_value = EXCLUDED.actual_value, text_value = EXCLUDED.text_value,
+                       computed_status = EXCLUDED.computed_status, submitted_by = EXCLUDED.submitted_by,
+                       is_late_entry = EXCLUDED.is_late_entry, remarks = EXCLUDED.remarks, submitted_at = now()
+                     RETURNING *`,
+                    [r.kpi_id, r.reporting_date, actual, text, r.computed_status ?? null, me, r.is_late_entry ?? false, remarks]
+                );
+                await query(
+                    `INSERT INTO dmt_kpi_entry_log (entry_id, kpi_id, reporting_date, action, new_actual, new_text, new_remarks, changed_by)
+                     VALUES ($1,$2,$3,'submitted',$4,$5,$6,$7)`,
+                    [out[0].id, r.kpi_id, r.reporting_date, actual, text, remarks, me]
+                );
+                saved.push(out[0]);
+                continue;
+            }
+            // Already submitted: this is an EDIT. Keep who first submitted it (and its late flag);
+            // record what changed, by whom, and when. An unchanged row is a no-op.
+            const changed = num(prev.actual_value) !== actual || txt(prev.text_value) !== text || txt(prev.remarks) !== remarks;
+            if (!changed) { saved.push(prev); continue; }
             const out = await query(
-                `INSERT INTO dmt_kpi_entries
-                   (kpi_id, reporting_date, actual_value, text_value, computed_status, submitted_by, is_late_entry, remarks)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                 ON CONFLICT (kpi_id, reporting_date) DO UPDATE SET
-                   actual_value = EXCLUDED.actual_value,
-                   text_value = EXCLUDED.text_value,
-                   computed_status = EXCLUDED.computed_status,
-                   submitted_by = EXCLUDED.submitted_by,
-                   is_late_entry = EXCLUDED.is_late_entry,
-                   remarks = EXCLUDED.remarks,
-                   submitted_at = now()
-                 RETURNING *`,
-                [r.kpi_id, r.reporting_date, r.actual_value ?? null, r.text_value ?? null,
-                 r.computed_status ?? null, req.dmtUser.emp_id, r.is_late_entry ?? false, r.remarks ?? null]
+                `UPDATE dmt_kpi_entries SET actual_value = $2, text_value = $3, remarks = $4, computed_status = $5 WHERE id = $1 RETURNING *`,
+                [prev.id, actual, text, remarks, r.computed_status ?? null]
+            );
+            await query(
+                `INSERT INTO dmt_kpi_entry_log
+                   (entry_id, kpi_id, reporting_date, action, old_actual, new_actual, old_text, new_text, old_remarks, new_remarks, changed_by)
+                 VALUES ($1,$2,$3,'edited',$4,$5,$6,$7,$8,$9,$10)`,
+                [prev.id, r.kpi_id, r.reporting_date, num(prev.actual_value), actual, txt(prev.text_value), text, txt(prev.remarks), remarks, me]
             );
             saved.push(out[0]);
         }
@@ -8707,24 +10149,6 @@ app.post('/api/dmt/planner-items/clear-completed', dmtGuard('jh_lead'), async (r
     }
 });
 
-// Task groups the requester belongs to (with is_leader). Used for the Task Board group pills.
-app.get('/api/dmt/my-task-groups', dmtGuard('jh_lead'), async (req, res) => {
-    try {
-        const rows = await query(
-            `SELECT g.id, g.name, g.color, g.created_by, gm.is_leader
-             FROM dmt_task_group_members gm
-             JOIN dmt_task_groups g ON g.id = gm.group_id
-             WHERE gm.user_id = $1
-             ORDER BY g.name ASC`,
-            [req.dmtUser.emp_id]
-        );
-        res.json(rows);
-    } catch (err) {
-        console.error('[DMT] my-task-groups', err.message);
-        res.status(500).json({ error: 'Failed to load groups' });
-    }
-});
-
 // former get_user_departments(p_user_id) RPC
 app.get('/api/dmt/my-departments', dmtGuard('jh_lead'), async (req, res) => {
     try {
@@ -8742,14 +10166,42 @@ app.get('/api/dmt/my-departments', dmtGuard('jh_lead'), async (req, res) => {
     }
 });
 
+// Only the person who ASSIGNED a task and the person it is ASSIGNED TO may act on it (change its
+// status, edit it, change its due date, comment, escalate). Nobody else - not BE Admin, not a
+// group Lead - even though they can see it. Enforced here, not just on screen.
+function dmtCanActOnTask(task, empId) {
+    return !!empId && (task.owner_id === empId || task.assigned_by === empId);
+}
+const DMT_TASK_ACT_ERR = 'Only the person who assigned this task or the person it is assigned to can do that';
+
+// An Open task moves to In Progress by itself the first time its OWNER works on it (comments,
+// edits it, or changes its due date) — nobody has to remember to press Start. Someone else
+// touching the task (a boss commenting, a reassignment) never starts it.
+async function dmtAutoStartIfOwner(taskId, ownerId, status, empId) {
+    if (status !== 'open' || !empId || ownerId !== empId) return false;
+    const done = await query("UPDATE dmt_tasks SET status = 'in_progress' WHERE id = $1 AND status = 'open' RETURNING id", [taskId]);
+    if (!done.length) return false;
+    await query(
+        `INSERT INTO dmt_task_updates (task_id, previous_status, new_status, update_type, update_note, updated_by)
+         VALUES ($1, 'open', 'in_progress', 'status_change', 'Started automatically (the owner worked on it)', $2)`,
+        [taskId, empId]
+    );
+    dmtAudit('dmt_tasks', taskId, 'UPDATE', { status: 'open' }, { status: 'in_progress', auto: true }, empId);
+    return true;
+}
+
 // former update_task_status(p_task_id, p_new_status, p_note) RPC
 app.post('/api/dmt/tasks/:id/status', dmtGuard('jh_lead'), async (req, res) => {
     const { id } = req.params;
     const { new_status, note } = req.body;
     if (!new_status) return res.status(400).json({ error: 'new_status is required' });
+    if (new_status === 'blocked' && !String(note || '').trim()) {
+        return res.status(400).json({ error: 'A reason is required when blocking a task' });
+    }
     try {
-        const cur = (await query('SELECT status FROM dmt_tasks WHERE id = $1', [id]))[0];
+        const cur = (await query('SELECT status, owner_id, assigned_by FROM dmt_tasks WHERE id = $1', [id]))[0];
         if (!cur) return res.status(404).json({ error: 'Task not found' });
+        if (!dmtCanActOnTask(cur, req.dmtUser.emp_id)) return res.status(403).json({ error: DMT_TASK_ACT_ERR });
         const terminal = new_status === 'completed' || new_status === 'cancelled';
         const rows = await query(
             `UPDATE dmt_tasks SET status = $2, completed_at = ${terminal ? 'now()' : 'NULL'},
@@ -8776,8 +10228,9 @@ app.post('/api/dmt/tasks/:id/due-date', dmtGuard('jh_lead'), async (req, res) =>
     const { new_due_date, reason } = req.body;
     if (!new_due_date) return res.status(400).json({ error: 'new_due_date is required' });
     try {
-        const cur = (await query('SELECT due_date FROM dmt_tasks WHERE id = $1', [id]))[0];
+        const cur = (await query('SELECT due_date, owner_id, assigned_by, status FROM dmt_tasks WHERE id = $1', [id]))[0];
         if (!cur) return res.status(404).json({ error: 'Task not found' });
+        if (!dmtCanActOnTask(cur, req.dmtUser.emp_id)) return res.status(403).json({ error: DMT_TASK_ACT_ERR });
         const rows = await query('UPDATE dmt_tasks SET due_date = $2 WHERE id = $1 RETURNING *', [id, new_due_date]);
         await query(
             `INSERT INTO dmt_task_due_date_history (task_id, previous_due_date, new_due_date, reason, changed_by)
@@ -8790,6 +10243,7 @@ app.post('/api/dmt/tasks/:id/due-date', dmtGuard('jh_lead'), async (req, res) =>
             [id, cur.due_date, new_due_date, reason || null, req.dmtUser.emp_id]
         );
         dmtAudit('dmt_tasks', id, 'UPDATE', { due_date: cur.due_date }, { due_date: new_due_date, reason: reason || null }, req.dmtUser.emp_id);
+        if (await dmtAutoStartIfOwner(id, cur.owner_id, cur.status, req.dmtUser.emp_id)) rows[0].status = 'in_progress';
         res.json(rows[0]);
     } catch (err) {
         console.error('[DMT] task due-date', err.message);
@@ -8800,16 +10254,48 @@ app.post('/api/dmt/tasks/:id/due-date', dmtGuard('jh_lead'), async (req, res) =>
 // former update_task_fields(p_task_id, p_title, p_description, p_owner_id, p_priority, p_department_id) RPC
 app.post('/api/dmt/tasks/:id/fields', dmtGuard('jh_lead'), async (req, res) => {
     const { id } = req.params;
-    const { title, description, owner_id, priority, department_id } = req.body;
+    const { title, description, owner_id, priority, tier_id, is_private } = req.body;
     try {
-        const cur = (await query('SELECT title, description, owner_id, priority, department_id FROM dmt_tasks WHERE id = $1', [id]))[0];
+        await ensureDmtEscalationSchema();
+        const cur = (await query('SELECT title, description, owner_id, assigned_by, priority, escalated_to_tier_id, escalated_at, tier_id, status FROM dmt_tasks WHERE id = $1', [id]))[0];
         if (!cur) return res.status(404).json({ error: 'Task not found' });
+        if (!dmtCanActOnTask(cur, req.dmtUser.emp_id)) return res.status(403).json({ error: DMT_TASK_ACT_ERR });
+        // An escalated task can only be handed on by its current owner, and only to someone in
+        // the group it was escalated to.
+        if (owner_id && owner_id !== cur.owner_id && cur.escalated_to_tier_id) {
+            if (cur.owner_id !== req.dmtUser.emp_id) return res.status(403).json({ error: 'Only the current owner can reassign an escalated task' });
+            const inGroup = await query(
+                `SELECT 1 FROM dmt_tier t WHERE t.id = $1 AND (t.lead_emp_id = $2 OR EXISTS (SELECT 1 FROM dmt_tier_member m WHERE m.tier_id = t.id AND m.emp_id = $2))`,
+                [cur.escalated_to_tier_id, owner_id]
+            );
+            if (!inGroup.length) return res.status(400).json({ error: 'An escalated task can only be reassigned to someone in the group it was escalated to' });
+        }
+        // Changing the task's GROUP (same rules as New Task): not once it is escalated; the group must be
+        // one the caller can see and the task's owner must be in it; a task in no group must be private.
+        const groupTouched = tier_id !== undefined;
+        if (groupTouched) {
+            if (cur.escalated_at) return res.status(400).json({ error: "The group of an escalated task can't be changed" });
+            if (tier_id === null) {
+                if (is_private !== true) return res.status(400).json({ error: 'A task that is not in any group must be private' });
+            } else {
+                const bad = await dmtValidateTierTag({ tier_id }, req.dmtUser, 'task');
+                if (bad) return res.status(bad.status).json({ error: bad.error });
+                const effOwner = owner_id || cur.owner_id;
+                const inTier = await query(
+                    `SELECT 1 FROM dmt_tier t WHERE t.id = $1 AND t.is_active = true AND (t.lead_emp_id = $2 OR EXISTS (SELECT 1 FROM dmt_tier_member m WHERE m.tier_id = t.id AND m.emp_id = $2))`,
+                    [tier_id, effOwner]
+                );
+                if (!inTier.length) return res.status(400).json({ error: 'The task owner must be in the group the task belongs to' });
+            }
+        }
         const rows = await query(
             `UPDATE dmt_tasks SET title = COALESCE($2, title), description = $3,
                     owner_id = COALESCE($4, owner_id), priority = COALESCE($5, priority),
-                    department_id = COALESCE($6, department_id)
+                    tier_id = CASE WHEN $6::boolean THEN $7::uuid ELSE tier_id END,
+                    is_private = COALESCE($8::boolean, is_private)
              WHERE id = $1 RETURNING *`,
-            [id, title ?? null, description ?? null, owner_id ?? null, priority ?? null, department_id ?? null]
+            [id, title ?? null, description ?? null, owner_id ?? null, priority ?? null,
+                groupTouched, groupTouched ? tier_id : null, groupTouched && typeof is_private === 'boolean' ? is_private : null]
         );
         const me = req.dmtUser.emp_id;
         if (title && title !== cur.title) {
@@ -8821,7 +10307,20 @@ app.post('/api/dmt/tasks/:id/fields', dmtGuard('jh_lead'), async (req, res) => {
         if (description !== undefined && description !== cur.description) {
             await query(`INSERT INTO dmt_task_updates (task_id, update_type, previous_text, new_text, updated_by) VALUES ($1,'description_change',$2,$3,$4)`, [id, cur.description, description, me]);
         }
+        if (groupTouched && (tier_id ?? null) !== (cur.tier_id ?? null)) {
+            const groupLabel = async (tid) => {
+                if (!tid) return 'No group (private)';
+                const r = (await query(
+                    `SELECT COALESCE(t.display_name, t.name || COALESCE(' · ' || COALESCE(mg.module, jg.name), '')) AS label
+                     FROM dmt_tier t LEFT JOIN module_groups mg ON mg.id = t.dmt_id LEFT JOIN jh_group jg ON jg.id::text = t.jh_group_id::text
+                     WHERE t.id = $1`, [tid]))[0];
+                return r?.label || 'Unknown group';
+            };
+            await query(`INSERT INTO dmt_task_updates (task_id, update_type, previous_text, new_text, updated_by) VALUES ($1,'group_change',$2,$3,$4)`,
+                [id, await groupLabel(cur.tier_id), await groupLabel(tier_id ?? null), me]);
+        }
         dmtAudit('dmt_tasks', id, 'UPDATE', cur, rows[0], me);
+        if ((!owner_id || owner_id === cur.owner_id) && (await dmtAutoStartIfOwner(id, cur.owner_id, cur.status, me))) rows[0].status = 'in_progress';
         res.json(rows[0]);
     } catch (err) {
         console.error('[DMT] task fields', err.message);
@@ -8834,13 +10333,15 @@ app.post('/api/dmt/tasks/:id/comment', dmtGuard('jh_lead'), async (req, res) => 
     const { text } = req.body;
     if (!String(text || '').trim()) return res.status(400).json({ error: 'text is required' });
     try {
-        const exists = await query('SELECT 1 FROM dmt_tasks WHERE id = $1', [req.params.id]);
+        const exists = await query('SELECT owner_id, assigned_by, status FROM dmt_tasks WHERE id = $1', [req.params.id]);
         if (!exists.length) return res.status(404).json({ error: 'Task not found' });
+        if (!dmtCanActOnTask(exists[0], req.dmtUser.emp_id)) return res.status(403).json({ error: DMT_TASK_ACT_ERR });
         const rows = await query(
             `INSERT INTO dmt_task_updates (task_id, update_type, update_note, updated_by)
              VALUES ($1, 'comment', $2, $3) RETURNING *`,
             [req.params.id, text.trim(), req.dmtUser.emp_id]
         );
+        await dmtAutoStartIfOwner(req.params.id, exists[0].owner_id, exists[0].status, req.dmtUser.emp_id);
         res.status(201).json(rows[0]);
     } catch (err) {
         console.error('[DMT] task comment', err.message);
@@ -8849,24 +10350,26 @@ app.post('/api/dmt/tasks/:id/comment', dmtGuard('jh_lead'), async (req, res) => 
 });
 
 // former update_pd_job_stage(p_job_id, p_new_stage, p_note, p_feedback_note) RPC
-app.post('/api/dmt/pd-jobs/:id/stage', dmtGuard('module_lead'), async (req, res) => {
+app.post('/api/dmt/pd-jobs/:id/stage', dmtPdGuard, async (req, res) => {
     const { id } = req.params;
     const { new_stage, note, feedback_note } = req.body;
-    const VALID = {
-        upcoming: ['in_process', 'abandoned'],
-        in_process: ['processing_finished', 'abandoned'],
-        processing_finished: ['feedback_approved', 'feedback_rejected', 'abandoned'],
-    };
     try {
         const cur = (await query('SELECT stage FROM dmt_pd_jobs WHERE id = $1', [id]))[0];
         if (!cur) return res.status(404).json({ error: 'PD job not found' });
-        if (!(VALID[cur.stage] || []).includes(new_stage)) {
+        const cfg = await pdStageConfig();
+        const opt = pdStageOptions(cfg, cur.stage);
+        const isBack = !!new_stage && new_stage === opt.back_to;
+        if (!isBack && !opt.forward.includes(new_stage)) {
             return res.status(400).json({ error: `Invalid stage transition from ${cur.stage} to ${new_stage}` });
         }
-        if (['feedback_rejected', 'abandoned'].includes(new_stage) && !String(feedback_note || '').trim()) {
-            return res.status(400).json({ error: `Feedback note is required when moving to ${new_stage}` });
+        if (isBack && !String(note || '').trim()) {
+            return res.status(400).json({ error: 'A reason is required to move a job back' });
         }
-        const closes = ['feedback_approved', 'feedback_rejected', 'abandoned'].includes(new_stage);
+        const target = cfg.find((s) => s.key === new_stage);
+        if (target.requires_note && !String(feedback_note || '').trim()) {
+            return res.status(400).json({ error: `A feedback note is required when moving to ${target.label}` });
+        }
+        const closes = target.kind === 'closing';
         const rows = await query(
             `UPDATE dmt_pd_jobs SET stage = $2, feedback_note = COALESCE($3, feedback_note),
                     closed_at = ${closes ? 'now()' : 'closed_at'}
@@ -8875,9 +10378,11 @@ app.post('/api/dmt/pd-jobs/:id/stage', dmtGuard('module_lead'), async (req, res)
         );
         await query(
             `INSERT INTO dmt_pd_stage_history (job_id, from_stage, to_stage, changed_by, note) VALUES ($1,$2,$3,$4,$5)`,
-            [id, cur.stage, new_stage, req.dmtUser.emp_id, note || null]
+            [id, cur.stage, new_stage, req.dmtUser.emp_id, isBack ? `Moved back: ${note}` : (note || null)]
         );
         dmtAudit('dmt_pd_jobs', id, 'UPDATE', { stage: cur.stage }, { stage: new_stage, feedback_note: feedback_note || null }, req.dmtUser.emp_id);
+        const why = [isBack && 'Moved back', note && `Note: ${note}`, feedback_note && `Feedback: ${feedback_note}`].filter(Boolean).join(' · ');
+        await dmtPdLog('stage_changed', { job_id: id, from_stage: cur.stage, to_stage: new_stage, detail: why || null }, req.dmtUser.emp_id);
         res.json(rows[0]);
     } catch (err) {
         console.error('[DMT] pd stage', err.message);
@@ -8886,23 +10391,32 @@ app.post('/api/dmt/pd-jobs/:id/stage', dmtGuard('module_lead'), async (req, res)
 });
 
 // former spawn_pd_job_from(p_source_job_id, p_respawn_reason, p_new_title, p_new_target_dispatch_date) RPC
-app.post('/api/dmt/pd-jobs/:id/spawn', dmtGuard('module_lead'), async (req, res) => {
+app.post('/api/dmt/pd-jobs/:id/spawn', dmtPdGuard, async (req, res) => {
     const { id } = req.params;
     const { respawn_reason, new_title, new_target_dispatch_date } = req.body;
     if (!String(respawn_reason || '').trim()) return res.status(400).json({ error: 'Respawn reason is required' });
     try {
         const src = (await query('SELECT * FROM dmt_pd_jobs WHERE id = $1', [id]))[0];
         if (!src) return res.status(404).json({ error: 'Source PD job not found' });
-        if (!['feedback_rejected', 'abandoned'].includes(src.stage)) {
+        // A job can be respawned once it has ended in a "negative" closing stage (one that needs a feedback note).
+        const cfg = await pdStageConfig();
+        const from = cfg.find((s) => s.key === src.stage);
+        if (!from || from.kind !== 'closing' || !from.requires_note) {
             return res.status(400).json({ error: 'Can only spawn from a rejected or abandoned job' });
         }
+        const first = cfg.find((s) => s.kind === 'active');
+        if (!first) return res.status(400).json({ error: 'No PD stage is set up yet' });
         const rows = await query(
-            `INSERT INTO dmt_pd_jobs (factory_id, title, customer, product, substrate, target_dispatch_date, previous_job_id, respawn_reason, created_by)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+            `INSERT INTO dmt_pd_jobs (factory_id, title, customer, product, substrate, target_dispatch_date, previous_job_id, respawn_reason, created_by, category_id, stage)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
             [src.factory_id, (new_title || '').trim() || src.title, src.customer, src.product, src.substrate,
-             new_target_dispatch_date || null, src.id, respawn_reason, req.dmtUser.emp_id]
+             new_target_dispatch_date || null, src.id, respawn_reason, req.dmtUser.emp_id, src.category_id || null, first.key]
         );
         dmtAudit('dmt_pd_jobs', rows[0]?.id, 'INSERT', null, { spawned_from: src.id, respawn_reason }, req.dmtUser.emp_id);
+        await dmtPdLog('respawned', {
+            job_id: rows[0]?.id, job_number: rows[0]?.job_number, job_title: rows[0]?.title,
+            detail: `Respawned from PD#${src.job_number} — ${respawn_reason}`,
+        }, req.dmtUser.emp_id);
         res.status(201).json(rows[0]);
     } catch (err) {
         console.error('[DMT] pd spawn', err.message);
@@ -8946,26 +10460,183 @@ function dmtCanManageTier(tierRow, dmtUser) {
     return tierRow.lead_emp_id === dmtUser.emp_id;
 }
 
+// Everyone configured as an OPL, Kaizen, or Abnormality routing approver — across either
+// review phase — for any JH group under this DMT (module_group). Union of explicit
+// approval_routing rows AND each JH group's own leader_emp_id (the default approver when no
+// routing row exists), since a "routing incharge" includes whoever reviews by default too.
+async function dmtRoutingInchargesForDmt(dmtId) {
+    if (!dmtId || !pool) return new Set();
+    const rows = await query(
+        `SELECT DISTINCT emp_id FROM (
+            SELECT leader_emp_id AS emp_id FROM jh_group WHERE module_group_id::text = $1
+            UNION
+            SELECT ar.approver_emp_id AS emp_id
+            FROM approval_routing ar
+            JOIN jh_group jg ON jg.id::text = ar.jh_group_id
+            WHERE jg.module_group_id::text = $1
+              AND ar.is_active = true
+              AND (ar.entity_type LIKE 'opl%' OR ar.entity_type LIKE 'kaizen%' OR ar.entity_type LIKE 'abnormality%')
+         ) x WHERE emp_id IS NOT NULL`,
+        [dmtId]
+    );
+    return new Set(rows.map((r) => r.emp_id));
+}
+
+// KPI-picking specifically also opens up to a DMT's routing incharges (OPL/Kaizen/Abnormality
+// reviewers for its JH groups) — broader than dmtCanManageTier, which governs membership.
+async function dmtCanManageTierKpis(tierRow, dmtUser) {
+    if (dmtCanManageTier(tierRow, dmtUser)) return true;
+    if (tierRow.jh_group_id) return dmtCanManageT2(tierRow, dmtUser);
+    if (!tierRow.dmt_id) return false;
+    const incharges = await dmtRoutingInchargesForDmt(tierRow.dmt_id);
+    return incharges.has(dmtUser.emp_id);
+}
+
+// Same routing-incharge idea as dmtRoutingInchargesForDmt, but scoped to exactly one JH group
+// (for T2) instead of every JH group under a DMT.
+async function dmtRoutingInchargesForJhGroup(jhGroupId) {
+    if (!jhGroupId || !pool) return new Set();
+    const rows = await query(
+        `SELECT DISTINCT approver_emp_id AS emp_id FROM approval_routing
+         WHERE jh_group_id = $1 AND is_active = true AND approver_emp_id IS NOT NULL
+           AND (entity_type LIKE 'opl%' OR entity_type LIKE 'kaizen%' OR entity_type LIKE 'abnormality%')`,
+        [String(jhGroupId)]
+    );
+    return new Set(rows.map((r) => r.emp_id));
+}
+
+// T2 (one tier per JH group): BE Lead, that JH group's own leader, the parent DMT's module
+// lead, or a routing incharge of that specific JH group — governs BOTH reassigning the Lead
+// and picking KPIs (unlike T3, where Lead-change and KPI-picking have different, narrower and
+// broader, authorized sets respectively).
+async function dmtCanManageT2(tierRow, dmtUser) {
+    if (dmtTierAtLeast(dmtUser.tier, 'be_lead')) return true;
+    if (!tierRow.jh_group_id) return false;
+    const jgRows = await query('SELECT leader_emp_id, module_group_id FROM jh_group WHERE id = $1', [tierRow.jh_group_id]);
+    const jg = jgRows[0];
+    if (!jg) return false;
+    if (jg.leader_emp_id === dmtUser.emp_id) return true;
+    if (jg.module_group_id) {
+        const mgRows = await query('SELECT module_lead_emp_id FROM module_groups WHERE id = $1', [jg.module_group_id]);
+        if (mgRows[0]?.module_lead_emp_id === dmtUser.emp_id) return true;
+    }
+    const incharges = await dmtRoutingInchargesForJhGroup(tierRow.jh_group_id);
+    return incharges.has(dmtUser.emp_id);
+}
+
+// Every tier id this person may see TASKS under, following the T4 > T3(DMT) > T2(JH group)
+// hierarchy. What grants visibility:
+//   - Ordinary MEMBERSHIP of a tier (including being listed as its Lead) grants visibility of
+//     just that one tier's own tasks. There is NO downward cascade of any kind: neither
+//     hierarchy links (`parent_tier_id`) nor the real DMT -> JH group relationship let a
+//     higher group's members or Lead see a lower group's tasks, and a T4/T3 Lead gets nothing
+//     extra. Only the grants below widen visibility.
+//   - An explicit `dmt_tier_task_viewer` grant — the tier's incharge (BE Lead or its own
+//     Lead) can name specific extra people, beyond the automatic member/Lead set, who should
+//     also see that one tier's own tasks (no further cascade).
+// BE Lead has full authority over every tier already (dmtCanManageTier) — this extends the
+// same blanket visibility to tasks, per owner direction: BE Lead counts as being in every tier.
+// A named `dmt_global_task_viewer` (Organisation → Task Board Overview, BE-Lead-managed) gets
+// the same factory-wide grant explicitly, without being BE Lead or any tier's Lead.
+async function dmtIsGlobalTaskViewer(dmtUser, fid) {
+    const rows = await query('SELECT 1 FROM dmt_global_task_viewer WHERE factory_id = $1 AND emp_id = $2 LIMIT 1', [fid, dmtUser.emp_id]);
+    return rows.length > 0;
+}
+
+async function dmtVisibleTierIdsFor(dmtUser) {
+    const fid = await dmtUserFactoryId(dmtUser);
+    await ensureDmtCoFacilitator();
+    const allTiers = await query(
+        'SELECT id, dmt_id, jh_group_id, lead_emp_id, co_facilitator_emp_id FROM dmt_tier WHERE factory_id = $1',
+        [fid]
+    );
+    // BE Lead sees everything by role; a named global task viewer sees everything too, without
+    // being BE Lead — a factory-wide grant a BE Lead hands out explicitly (Task Board Overview
+    // tab). Private tasks are untouched either way — they're never tier-scoped.
+    if (dmtTierAtLeast(dmtUser.tier, 'be_lead') || await dmtIsGlobalTaskViewer(dmtUser, fid)) {
+        return new Set(allTiers.map((t) => t.id));
+    }
+
+    const memberRows = await query('SELECT tier_id FROM dmt_tier_member WHERE emp_id = $1', [dmtUser.emp_id]);
+    const mine = new Set(memberRows.map((r) => r.tier_id));
+    for (const t of allTiers) if (t.lead_emp_id === dmtUser.emp_id || t.co_facilitator_emp_id === dmtUser.emp_id) mine.add(t.id);
+    const viewerRows = await query('SELECT tier_id FROM dmt_tier_task_viewer WHERE emp_id = $1', [dmtUser.emp_id]);
+    for (const r of viewerRows) mine.add(r.tier_id);
+
+    return mine;
+}
+
+// A tier_id (tier-based visibility) must be a tier the creator can actually see — same
+// hierarchy rule as dmtVisibleTierIdsFor. Shared by tasks and meetings.
+async function dmtValidateTierTag(body, dmtUser, noun = 'item') {
+    if (body.tier_id === undefined || body.tier_id === null) return null;
+    const visible = await dmtVisibleTierIdsFor(dmtUser);
+    if (!visible.has(body.tier_id)) {
+        return { status: 403, error: `You can only tag this ${noun} to a tier you belong to or can see` };
+    }
+    return null;
+}
+async function dmtValidateTask(body, dmtUser) { await ensureDmtTaskDeptNullable(); return dmtValidateTierTag(body, dmtUser, 'task'); }
+
+// Every meeting now belongs to a group (tier) — mandatory on create — and only that group's
+// own Lead or a BE admin may schedule (or retarget) a meeting for it. `dmtCanManageTier`
+// already encodes exactly that rule (BE Lead, or the tier's own lead_emp_id) for every other
+// tier-scoped action, so it's reused here rather than a fresh, parallel rule.
+async function dmtValidateMeeting(body, dmtUser, opts = {}) {
+    if (opts.isCreate && !body.tier_id) {
+        return { status: 400, error: 'Every meeting must belong to a group' };
+    }
+    const tagBad = await dmtValidateTierTag(body, dmtUser, 'meeting');
+    if (tagBad) return tagBad;
+    if (body.tier_id) {
+        const tierRows = await query('SELECT * FROM dmt_tier WHERE id = $1', [body.tier_id]);
+        if (!tierRows.length || !dmtCanManageTier(tierRows[0], dmtUser)) {
+            return { status: 403, error: 'Only that group\'s Lead or a BE admin can create or move a meeting for it' };
+        }
+    }
+    return null;
+}
+
 // List this factory's tiers. BE Lead sees all (incl. inactive); everyone else sees only
 // active tiers they're the Lead of or a member of.
 app.get('/api/dmt/tiers', dmtGuard('jh_lead'), async (req, res) => {
     try {
         const fid = await dmtUserFactoryId(req.dmtUser);
         const isBe = dmtTierAtLeast(req.dmtUser.tier, 'be_lead');
+        await ensureDmtCoFacilitator();
         const rows = await query(
-            `SELECT t.*, ud.name AS lead_name,
+            `SELECT t.*, ud.name AS lead_name, cfu.name AS co_facilitator_name, mg.module AS dmt_name, jg.name AS jh_group_name,
+                    jg.module_group_id AS jh_group_dmt_id,
                     (SELECT count(*) FROM dmt_tier_member m WHERE m.tier_id = t.id) AS member_count,
                     (SELECT count(*) FROM dmt_tier_kpi k WHERE k.tier_id = t.id) AS kpi_count,
-                    EXISTS(SELECT 1 FROM dmt_tier_member m WHERE m.tier_id = t.id AND m.emp_id = $2) AS is_member
+                    EXISTS(SELECT 1 FROM dmt_tier_member m WHERE m.tier_id = t.id AND m.emp_id = $2) AS is_member,
+                    EXISTS(SELECT 1 FROM dmt_tier_task_viewer v WHERE v.tier_id = t.id AND v.emp_id = $2) AS is_task_viewer
              FROM dmt_tier t
              LEFT JOIN user_details ud ON ud.emp_id = t.lead_emp_id
+             LEFT JOIN user_details cfu ON cfu.emp_id = t.co_facilitator_emp_id
+             LEFT JOIN module_groups mg ON mg.id = t.dmt_id
+             LEFT JOIN jh_group jg ON jg.id = t.jh_group_id
              WHERE t.factory_id = $1
              ORDER BY t.name ASC`,
             [fid, req.dmtUser.emp_id]
         );
+
+        // Resolve routing-incharge status once per distinct DMT / JH group (not once per row).
+        const dmtIds = [...new Set(rows.map((r) => r.dmt_id).filter(Boolean))];
+        const [inchargeSets, t2CanManageSets] = await Promise.all([
+            Object.fromEntries(await Promise.all(dmtIds.map(async (id) => [id, await dmtRoutingInchargesForDmt(id)]))),
+            Object.fromEntries(await Promise.all(rows.filter((r) => r.jh_group_id).map(async (r) => [r.id, await dmtCanManageT2(r, req.dmtUser)]))),
+        ]);
+        const isRoutingIncharge = (r) => r.dmt_id && inchargeSets[r.dmt_id]?.has(req.dmtUser.emp_id);
+        const canManageT2Row = (r) => r.jh_group_id && !!t2CanManageSets[r.id];
+
+        const enriched = rows.map((r) => ({
+            ...r,
+            can_manage_kpis: isBe || r.lead_emp_id === req.dmtUser.emp_id || isRoutingIncharge(r) || canManageT2Row(r),
+        }));
         const visible = isBe
-            ? rows
-            : rows.filter(r => r.is_active && (r.is_member || r.lead_emp_id === req.dmtUser.emp_id));
+            ? enriched
+            : enriched.filter((r) => r.is_active && (r.is_member || r.is_task_viewer || r.lead_emp_id === req.dmtUser.emp_id || r.co_facilitator_emp_id === req.dmtUser.emp_id || isRoutingIncharge(r) || canManageT2Row(r)));
         res.json(visible);
     } catch (err) {
         console.error('[DMT] GET tiers', err.message);
@@ -8973,36 +10644,182 @@ app.get('/api/dmt/tiers', dmtGuard('jh_lead'), async (req, res) => {
     }
 });
 
-// Create a tier (BE Lead only). Body: { name }.
-app.post('/api/dmt/tiers', dmtGuard('be_lead'), async (req, res) => {
+// True if `dmtUser` may create/reparent groups: BE Lead, or the Lead of any active T4 group
+// in this plant. Creation of T3/T2 is deliberately restricted to this set (not "anyone who
+// can see the Tiers page") — per owner direction, only the factory-wide group's own Lead or a
+// BE admin builds out the hierarchy underneath it.
+async function dmtIsBeOrT4Lead(dmtUser, fid) {
+    if (dmtTierAtLeast(dmtUser.tier, 'be_lead')) return true;
+    const rows = await query(
+        `SELECT 1 FROM dmt_tier WHERE factory_id = $1 AND name = 'T4' AND dmt_id IS NULL AND jh_group_id IS NULL
+         AND is_active = true AND lead_emp_id = $2 LIMIT 1`,
+        [fid, dmtUser.emp_id]
+    );
+    return rows.length > 0;
+}
+
+// Validate an optional `parent_tier_id` for a group being created/reparented at this scope.
+// A T3-level group may only link to a T4. A T2-level group may link to EITHER a T3 or a T4
+// directly (skipping T3 is allowed — some JH groups answer straight to the factory-wide group
+// with no DMT-level group in between). "Level" isn't just dmt_id/jh_group_id any more — a
+// standalone/custom T3 or T2 (created free-form, like T4, with no real DMT or JH group behind
+// it) has both ids null, so its `name` ('T3'/'T2') is what tells its level apart from an
+// actual T4. Returns an error string, or null.
+async function dmtValidateParentTier(parentTierId, { name, dmtId, jhGroupId }, fid) {
+    if (!parentTierId) return null;
+    const rows = await query('SELECT id, name, dmt_id, jh_group_id, factory_id FROM dmt_tier WHERE id = $1', [parentTierId]);
+    const parent = rows[0];
+    if (!parent || String(parent.factory_id) !== String(fid)) return 'parent_tier_id must be a real group in your plant';
+    const parentLevel = parent.dmt_id ? 'T3' : parent.jh_group_id ? 'T2' : parent.name;
+    const myLevel = dmtId ? 'T3' : jhGroupId ? 'T2' : name;
+    if (myLevel === 'T3' && parentLevel !== 'T4') return 'A T3 group can only report to a T4 group';
+    if (myLevel === 'T2' && parentLevel !== 'T3' && parentLevel !== 'T4') return 'A T2 group can only report to a T3 or T4 group';
+    return null;
+}
+
+// Create a tier. Body: { name, dmt_id?, jh_group_id?, parent_tier_id? } — dmt_id and
+// jh_group_id are mutually exclusive (a tier is scoped to exactly one level: factory / DMT /
+// JH group). dmt_id ties this tier to one real DMT — at most one tier of a given name per DMT.
+// jh_group_id ties it to one real JH group instead — at most one tier of a given name per JH
+// group. Omitting both makes it factory-wide (like T4) — at most one tier of a given name per
+// factory. Either id must belong to the caller's own plant. Restricted to BE Admin only —
+// creation is deliberate, not auto-derived.
+app.post('/api/dmt/tiers', dmtGuard('jh_lead'), async (req, res) => {
     try {
         const name = String(req.body.name || '').trim();
         if (!name) return res.status(400).json({ error: 'name is required' });
         const fid = await dmtUserFactoryId(req.dmtUser);
+        if (!dmtTierAtLeast(req.dmtUser.tier, 'be_lead')) {
+            return res.status(403).json({ error: 'Only BE Admin can create a group' });
+        }
+        const dmtId = req.body.dmt_id || null;
+        const jhGroupId = req.body.jh_group_id || null;
+        if (dmtId && jhGroupId) return res.status(400).json({ error: 'Pass dmt_id or jh_group_id, not both' });
+        const parentErr = await dmtValidateParentTier(req.body.parent_tier_id || null, { name, dmtId, jhGroupId }, fid);
+        if (parentErr) return res.status(400).json({ error: parentErr });
+        // A scoped tier defaults its Lead to that scope's own natural leader (still changeable
+        // afterwards) — nobody has to appoint one by hand.
+        let leadEmpId = null;
+        if (dmtId) {
+            const dmtRows = await query('SELECT id, module_lead_emp_id FROM module_groups WHERE id = $1 AND factory_id = $2', [dmtId, fid]);
+            if (!dmtRows.length) return res.status(400).json({ error: 'dmt_id must be a real DMT in your plant' });
+            leadEmpId = dmtRows[0].module_lead_emp_id || null;
+        }
+        if (jhGroupId) {
+            const jgRows = await query('SELECT id, leader_emp_id FROM jh_group WHERE id = $1 AND factory_id = $2', [jhGroupId, fid]);
+            if (!jgRows.length) return res.status(400).json({ error: 'jh_group_id must be a real JH group in your plant' });
+            leadEmpId = jgRows[0].leader_emp_id || null;
+        }
+        // A T4-level group (neither dmt_id nor jh_group_id) has no natural scope to pull a
+        // Lead from — a BE admin creates these directly, by hand, and must name one at
+        // creation. BE admins can now create any number of these (no more one-per-factory
+        // cap), each independently named and led.
+        let displayName = null;
+        if (!dmtId && !jhGroupId) {
+            leadEmpId = req.body.lead_emp_id || null;
+            if (!leadEmpId) return res.status(400).json({ error: 'lead_emp_id is required when creating a factory-wide (T4) group' });
+            const leadRows = await query('SELECT emp_id FROM user_details WHERE emp_id = $1 AND is_active = true', [leadEmpId]);
+            if (!leadRows.length) return res.status(400).json({ error: 'Lead must be a real, active user' });
+            displayName = req.body.display_name ? String(req.body.display_name).trim() : null;
+        }
+        // Every manually-created group (T4, or now T3/T2 too) is usable immediately — only the
+        // old silent per-DMT/per-JH-group auto-create defaulted to inactive, and that auto-
+        // create path is gone.
+        // A private group can only be created by BE Admin. Visibility rules are identical to any
+        // other group — the flag is only for the future auto-escalation feature. The column is
+        // only written when true, so ordinary creation keeps working before the migration runs.
+        const isPrivate = req.body.is_private === true;
+        if (isPrivate && !dmtTierAtLeast(req.dmtUser.tier, 'be_lead')) {
+            return res.status(403).json({ error: 'Only BE Admin can create a private group' });
+        }
+        // New groups auto-escalate after 90 days by default; a T4 (nothing above it) and a
+        // private group (manual escalation only) never do.
+        await ensureDmtEscalationSchema();
+        const escDays = isPrivate || name === 'T4' ? null : 90;
         const rows = await query(
-            `INSERT INTO dmt_tier (factory_id, name) VALUES ($1, $2) RETURNING *`,
-            [fid, name]
+            isPrivate
+                ? `INSERT INTO dmt_tier (factory_id, name, dmt_id, jh_group_id, lead_emp_id, display_name, is_active, parent_tier_id, is_private, escalation_days)
+                   VALUES ($1, $2, $3, $4, $5, $6, true, $7, true, $8) RETURNING *`
+                : `INSERT INTO dmt_tier (factory_id, name, dmt_id, jh_group_id, lead_emp_id, display_name, is_active, parent_tier_id, escalation_days)
+                   VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8) RETURNING *`,
+            [fid, name, dmtId, jhGroupId, leadEmpId, displayName, req.body.parent_tier_id || null, escDays]
         );
         dmtAudit('dmt_tier', rows[0].id, 'INSERT', null, rows[0], req.dmtUser.emp_id);
         res.status(201).json(rows[0]);
     } catch (err) {
-        if (err.code === '23505') return res.status(409).json({ error: `A tier named "${req.body.name}" already exists for this plant` });
+        if (err.code === '23505') return res.status(409).json({ error: `A tier named "${req.body.name}" already exists there` });
         console.error('[DMT] POST tiers', err.message);
         res.status(500).json({ error: 'Failed to create tier' });
     }
 });
 
-// Toggle active / set-or-change the Lead (BE Lead only). Body: { is_active?, lead_emp_id? }.
-app.patch('/api/dmt/tiers/:id', dmtGuard('be_lead'), async (req, res) => {
+// Toggle active (BE Lead only) / set-or-change the Lead (BE Lead, OR — for a DMT-scoped tier —
+// that DMT's own module lead). Body: { is_active?, lead_emp_id?, parent_tier_id? }.
+app.patch('/api/dmt/tiers/:id', dmtGuard('jh_lead'), async (req, res) => {
     try {
         const own = await query('SELECT * FROM dmt_tier WHERE id = $1', [req.params.id]);
         if (!own.length) return res.status(404).json({ error: 'Tier not found' });
         const fid = await dmtUserFactoryId(req.dmtUser);
         if (String(own[0].factory_id) !== String(fid)) return res.status(403).json({ error: 'Not your plant' });
 
+        const isBe = dmtTierAtLeast(req.dmtUser.tier, 'be_lead');
+        if ('is_active' in req.body && !isBe) {
+            return res.status(403).json({ error: 'Only BE Lead can activate/deactivate a tier' });
+        }
+        // Reparenting is a hierarchy-structure edit (Hierarchy tab) — same restricted set as
+        // creation (BE Lead, or a T4 group's own Lead). A T3-level tier may only link to a T4;
+        // a T2-level tier may link to a T3 OR a T4 directly (skipping T3). A T4 has nothing
+        // above it. "Level" here isn't just dmt_id/jh_group_id — a standalone/custom T3 or T2
+        // (both ids null, like an extra T4) is told apart by its own `name`.
+        if ('parent_tier_id' in req.body) {
+            if (!(await dmtIsBeOrT4Lead(req.dmtUser, fid))) {
+                return res.status(403).json({ error: 'Only BE Lead or a factory-wide (T4) group\'s Lead can change what a group reports to' });
+            }
+            if (own[0].name === 'T4') {
+                return res.status(400).json({ error: 'A factory-wide (T4) group has nothing to report to' });
+            }
+            const parentErr = await dmtValidateParentTier(req.body.parent_tier_id || null, { name: own[0].name, dmtId: own[0].dmt_id, jhGroupId: own[0].jh_group_id }, fid);
+            if (parentErr) return res.status(400).json({ error: parentErr });
+        }
+        if ('escalation_days' in req.body) {
+            if (!isBe) return res.status(403).json({ error: 'Only BE Admin can set a group\'s auto-escalation' });
+            const d = req.body.escalation_days;
+            if (d !== null && !(Number.isInteger(d) && d >= 1 && d <= 365)) {
+                return res.status(400).json({ error: 'escalation_days must be a whole number from 1 to 365, or null to turn it off' });
+            }
+            if (d !== null && own[0].name === 'T4') return res.status(400).json({ error: 'A T4 group has no group above it to escalate to' });
+            if (d !== null && own[0].is_private) return res.status(400).json({ error: 'Private groups do not auto-escalate' });
+            await ensureDmtEscalationSchema();
+        }
+        if ('display_name' in req.body && !dmtCanManageTier(own[0], req.dmtUser)) {
+            return res.status(403).json({ error: 'Only BE Lead or this tier\'s Lead can rename it' });
+        }
+        if ('lead_emp_id' in req.body && !isBe) {
+            if (own[0].jh_group_id) {
+                if (!(await dmtCanManageT2(own[0], req.dmtUser))) {
+                    return res.status(403).json({ error: 'Only BE Lead, this JH group\'s leader, its DMT\'s module lead, or a routing incharge can change its Lead' });
+                }
+            } else if (own[0].dmt_id) {
+                const dmtRows = await query('SELECT module_lead_emp_id FROM module_groups WHERE id = $1', [own[0].dmt_id]);
+                const isThisDmtsModuleLead = dmtRows[0]?.module_lead_emp_id === req.dmtUser.emp_id;
+                if (!isThisDmtsModuleLead) {
+                    return res.status(403).json({ error: 'Only BE Lead or this DMT\'s module lead can change its Lead' });
+                }
+            } else if (own[0].lead_emp_id !== req.dmtUser.emp_id) {
+                // A standalone/custom group (T4, or a free-form T3/T2 with no real DMT/JH
+                // group behind it) has no natural scope to defer to — just BE Lead or its own
+                // current Lead, same rule dmtCanManageTier already uses for rename.
+                return res.status(403).json({ error: 'Only BE Lead or this group\'s own Lead can change its Lead' });
+            }
+        }
+
         const sets = [];
         const params = [];
         if ('is_active' in req.body) { params.push(!!req.body.is_active); sets.push(`is_active = $${params.length}`); }
+        if ('display_name' in req.body) {
+            const dn = req.body.display_name ? String(req.body.display_name).trim() : null;
+            params.push(dn || null); sets.push(`display_name = $${params.length}`);
+        }
         if ('lead_emp_id' in req.body) {
             const leadEmpId = req.body.lead_emp_id || null;
             if (leadEmpId) {
@@ -9010,6 +10827,21 @@ app.patch('/api/dmt/tiers/:id', dmtGuard('be_lead'), async (req, res) => {
                 if (!leadRows.length) return res.status(400).json({ error: 'Lead must be a real, active user' });
             }
             params.push(leadEmpId); sets.push(`lead_emp_id = $${params.length}`);
+        }
+        if ('co_facilitator_emp_id' in req.body) {
+            if (!dmtCanManageTier(own[0], req.dmtUser)) return res.status(403).json({ error: "Only BE Lead or this group's Lead can set its Co-facilitator" });
+            await ensureDmtCoFacilitator();
+            const co = req.body.co_facilitator_emp_id || null;
+            if (co && !(await query('SELECT 1 FROM user_details WHERE emp_id = $1 AND is_active = true', [co])).length) {
+                return res.status(400).json({ error: 'Co-facilitator must be a real, active user' });
+            }
+            params.push(co); sets.push(`co_facilitator_emp_id = $${params.length}`);
+        }
+        if ('parent_tier_id' in req.body) {
+            params.push(req.body.parent_tier_id || null); sets.push(`parent_tier_id = $${params.length}`);
+        }
+        if ('escalation_days' in req.body) {
+            params.push(req.body.escalation_days); sets.push(`escalation_days = $${params.length}`);
         }
         if (!sets.length) return res.status(400).json({ error: 'No writable fields supplied' });
         params.push(req.params.id);
@@ -9019,6 +10851,289 @@ app.patch('/api/dmt/tiers/:id', dmtGuard('be_lead'), async (req, res) => {
     } catch (err) {
         console.error('[DMT] PATCH tiers/:id', err.message);
         res.status(500).json({ error: 'Failed to update tier' });
+    }
+});
+
+// Permanently delete a tier — BE Lead only, no exception for a tier's own Lead (undoing a
+// mistaken creation is a BE-admin call, not something the appointed Lead can do to themselves).
+// Members/task-viewers/KPI links cascade-delete (they're pure junction rows); any meetings or
+// tasks already tagged to this tier just lose that tag (FK is ON DELETE SET NULL) — they are
+// never touched or deleted themselves.
+app.delete('/api/dmt/tiers/:id', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        const own = await query('SELECT * FROM dmt_tier WHERE id = $1', [req.params.id]);
+        if (!own.length) return res.status(404).json({ error: 'Tier not found' });
+        const fid = await dmtUserFactoryId(req.dmtUser);
+        if (String(own[0].factory_id) !== String(fid)) return res.status(403).json({ error: 'Not your plant' });
+        await query('DELETE FROM dmt_tier WHERE id = $1', [req.params.id]);
+        dmtAudit('dmt_tier', own[0].id, 'DELETE', own[0], null, req.dmtUser.emp_id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DMT] DELETE tiers/:id', err.message);
+        res.status(500).json({ error: 'Failed to delete tier' });
+    }
+});
+
+// ============================================================================
+// Task escalation — an unfinished task is handed up to the group above its own (per the
+// Hierarchy "Reports to" link), automatically N days after its due date (N = that group's own
+// `escalation_days`, default 90, changed by BE Admin on the group's card in the Tiers page; blank = off) or
+// manually by the task's owner to any group or person. Escalation moves OWNERSHIP to the
+// recipient (a group's Lead by default, who can reassign within their group) and records the
+// previous owner; the task's own group (`tier_id`) is left untouched so it still shows on the
+// original board. Private GROUPS never auto-escalate but their tasks can be escalated by hand
+// (to any group or person); individually-private TASKS never escalate.
+// ============================================================================
+
+// Additive DDL applied lazily, same convention as ensureNotificationSchema — a plain restart
+// is enough, no manual SQL. `_dmtEscSchemaEnsured` also gates the escalation clause in the
+// scoped task LIST so a failed DDL can never break the Task Board.
+let _dmtEscSchemaEnsured = false;
+async function ensureDmtEscalationSchema() {
+    if (_dmtEscSchemaEnsured || !pool) return;
+    try {
+        await query(`ALTER TABLE dmt_tasks
+            ADD COLUMN IF NOT EXISTS escalated_at timestamptz,
+            ADD COLUMN IF NOT EXISTS escalation_type text,
+            ADD COLUMN IF NOT EXISTS escalated_to_tier_id uuid REFERENCES dmt_tier(id) ON DELETE SET NULL,
+            ADD COLUMN IF NOT EXISTS escalated_from_owner_id text REFERENCES user_details(emp_id),
+            ADD COLUMN IF NOT EXISTS escalated_by text REFERENCES user_details(emp_id),
+            ADD COLUMN IF NOT EXISTS escalation_note text`);
+        await query('ALTER TABLE dmt_tier ADD COLUMN IF NOT EXISTS escalation_days integer CHECK (escalation_days BETWEEN 1 AND 365)');
+        // Every group defaults to 90 days. Run ONCE (keyed on the column default) — a later
+        // "Turn off" stores NULL, which must never be flipped back on by a restart.
+        const def = await query("SELECT column_default FROM information_schema.columns WHERE table_name = 'dmt_tier' AND column_name = 'escalation_days'");
+        if (!String(def[0]?.column_default || '').startsWith('90')) {
+            await query('ALTER TABLE dmt_tier ALTER COLUMN escalation_days SET DEFAULT 90');
+            await query("UPDATE dmt_tier SET escalation_days = 90 WHERE escalation_days IS NULL AND name <> 'T4' AND is_private = false");
+        }
+        const chk = await query("SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = 'dmt_task_updates_update_type_check'");
+        if (chk[0] && (!chk[0].d.includes("'escalation'") || !chk[0].d.includes("'group_change'"))) {
+            await query('ALTER TABLE dmt_task_updates DROP CONSTRAINT dmt_task_updates_update_type_check');
+            await query(`ALTER TABLE dmt_task_updates ADD CONSTRAINT dmt_task_updates_update_type_check
+                CHECK (update_type = ANY (ARRAY['status_change','comment','due_date_change','title_change','description_change','assignee_change','escalation','group_change']))`);
+        }
+        _dmtEscSchemaEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtEscalationSchema failed:', e.message);
+    }
+}
+
+async function dmtEscalateTask(task, { toTierId, toEmpId, type, by, note }) {
+    const oldOwner = task.owner_id;
+    const rows = await query(
+        `UPDATE dmt_tasks SET escalated_at = now(), escalation_type = $2, escalated_to_tier_id = $3,
+                escalated_from_owner_id = $4, escalated_by = $5, escalation_note = $6, owner_id = $7
+         WHERE id = $1 RETURNING *`,
+        [task.id, type, toTierId || null, oldOwner, by || null, note || null, toEmpId]
+    );
+    await query(
+        `INSERT INTO dmt_task_updates (task_id, update_type, previous_text, new_text, update_note, updated_by)
+         VALUES ($1, 'escalation', $2, $3, $4, $5)`,
+        [task.id, oldOwner, toEmpId, `${type === 'auto' ? 'Auto-escalated (overdue)' : 'Escalated'}${note ? `: ${note}` : ''}`, by || oldOwner]
+    );
+    dmtAudit('dmt_tasks', task.id, 'UPDATE', { owner_id: oldOwner }, { owner_id: toEmpId, escalated: type, to_tier_id: toTierId || null }, by || oldOwner);
+    await notify(toEmpId, {
+        kind: 'dmt_task_escalated', module: 'dmt', entityId: task.id,
+        title: 'Task escalated to you',
+        body: `"${task.title}" was ${type === 'auto' ? 'auto-escalated after going overdue' : 'escalated to you'}.`,
+        createdBy: by || undefined,
+    });
+    return rows[0];
+}
+
+// Hourly: escalate every open, non-private task that is N+ days past its due date, where N is
+// its own group's `escalation_days` (blank = that group never auto-escalates). The group must be
+// active, non-private, and linked ("Reports to") to an active parent group that has a Lead.
+// Each task auto-escalates once.
+async function sweepDmtEscalations() {
+    if (!pool) return;
+    await ensureDmtEscalationSchema();
+    if (!_dmtEscSchemaEnsured) return;
+    try {
+        const due = await query(
+            `SELECT t.*, p.id AS parent_id, p.lead_emp_id AS parent_lead, ti.escalation_days AS esc_days
+             FROM dmt_tasks t
+             JOIN dmt_tier ti ON ti.id = t.tier_id
+             JOIN dmt_tier p ON p.id = ti.parent_tier_id
+             WHERE ti.escalation_days IS NOT NULL
+               AND t.status NOT IN ('completed', 'cancelled')
+               AND t.is_private = false AND ti.is_private = false AND ti.is_active = true
+               AND t.escalated_at IS NULL
+               AND p.is_active = true AND p.lead_emp_id IS NOT NULL AND p.lead_emp_id <> t.owner_id
+               AND t.due_date + ti.escalation_days <= CURRENT_DATE`
+        );
+        for (const t of due) {
+            try {
+                await dmtEscalateTask(t, { toTierId: t.parent_id, toEmpId: t.parent_lead, type: 'auto', by: null, note: `${t.esc_days}+ days past due` });
+            } catch (e) {
+                console.error(`[dmt-escalation] task ${t.id} failed:`, e.message);
+            }
+        }
+    } catch (e) {
+        console.error('[dmt-escalation] sweep failed:', e.message);
+    }
+}
+// Tasks belong to a GROUP (tier_id), never to a department. The old NOT NULL department_id column
+// is only relaxed (data kept, nothing deleted) so new tasks can be created without one.
+let _dmtTaskDeptRelaxed = false;
+async function ensureDmtTaskDeptNullable() {
+    if (_dmtTaskDeptRelaxed || !pool) return;
+    try {
+        await query('ALTER TABLE dmt_tasks ALTER COLUMN department_id DROP NOT NULL');
+        _dmtTaskDeptRelaxed = true;
+    } catch (e) {
+        console.error('ensureDmtTaskDeptNullable failed:', e.message);
+    }
+}
+
+if (pool) {
+    ensureDmtTaskDeptNullable();
+    ensureDmtEscalationSchema();
+    ensureDmtPd();
+    ensureDmtMeetingNotesOwner();
+    ensureDmtCoFacilitator();
+    ensureDmtAttendeeSheet();
+    const _dmtEscTimer = setInterval(sweepDmtEscalations, 60 * 60 * 1000);
+    if (_dmtEscTimer.unref) _dmtEscTimer.unref();
+    setTimeout(sweepDmtEscalations, 20 * 1000);
+}
+
+// Groups a task can be manually escalated to: every active, non-private group in the plant
+// (not just the caller's own — escalation is a hand-off up/out of one's own groups).
+app.get('/api/dmt/escalation-targets', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const fid = await dmtUserFactoryId(req.dmtUser);
+        const rows = await query(
+            `SELECT t.id, t.name, t.display_name, t.lead_emp_id, ud.name AS lead_name,
+                    mg.module AS dmt_name, jg.name AS jh_group_name
+             FROM dmt_tier t
+             LEFT JOIN user_details ud ON ud.emp_id = t.lead_emp_id
+             LEFT JOIN module_groups mg ON mg.id = t.dmt_id
+             LEFT JOIN jh_group jg ON jg.id = t.jh_group_id
+             WHERE t.factory_id = $1 AND t.is_active = true AND t.is_private = false
+             ORDER BY t.name ASC`,
+            [fid]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET escalation-targets', err.message);
+        res.status(500).json({ error: 'Failed to list escalation targets' });
+    }
+});
+
+// Manual escalation by the task's owner (or BE Admin) to a group (→ its Lead), a person, or
+// a person within a group.
+app.post('/api/dmt/tasks/:id/escalate', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        await ensureDmtEscalationSchema();
+        const me = req.dmtUser.emp_id;
+        const task = (await query('SELECT * FROM dmt_tasks WHERE id = $1', [req.params.id]))[0];
+        if (!task) return res.status(404).json({ error: 'Task not found' });
+        if (!dmtCanActOnTask(task, me)) return res.status(403).json({ error: DMT_TASK_ACT_ERR });
+        if (task.status === 'completed' || task.status === 'cancelled') return res.status(409).json({ error: 'A finished task cannot be escalated' });
+        if (task.is_private) return res.status(400).json({ error: 'Private tasks cannot be escalated' });
+        const toTierId = req.body.to_tier_id || null;
+        let toEmpId = req.body.to_emp_id || null;
+        if (!toTierId && !toEmpId) return res.status(400).json({ error: 'Pick a group or a person to escalate to' });
+        const fid = await dmtUserFactoryId(req.dmtUser);
+        let tier = null;
+        if (toTierId) {
+            tier = (await query('SELECT id, lead_emp_id, is_active, factory_id FROM dmt_tier WHERE id = $1', [toTierId]))[0];
+            if (!tier || tier.factory_id !== fid || !tier.is_active) return res.status(400).json({ error: 'Pick an active group in your plant' });
+            if (tier.id === task.tier_id) return res.status(400).json({ error: 'The task already belongs to that group' });
+        }
+        if (toEmpId) {
+            const u = await query('SELECT emp_id FROM user_details WHERE emp_id = $1 AND is_active = true', [toEmpId]);
+            if (!u.length) return res.status(400).json({ error: 'Pick an active person' });
+            if (tier && tier.lead_emp_id !== toEmpId) {
+                const m = await query('SELECT 1 FROM dmt_tier_member WHERE tier_id = $1 AND emp_id = $2', [tier.id, toEmpId]);
+                if (!m.length) return res.status(400).json({ error: 'That person is not in the chosen group' });
+            }
+        } else {
+            toEmpId = tier.lead_emp_id;
+            if (!toEmpId) return res.status(400).json({ error: 'That group has no Lead — pick a person instead' });
+        }
+        if (toEmpId === task.owner_id) return res.status(400).json({ error: 'That person already owns this task' });
+        const note = String(req.body.note || '').trim() || null;
+        res.json(await dmtEscalateTask(task, { toTierId, toEmpId, type: 'manual', by: me, note }));
+    } catch (err) {
+        console.error('[DMT] task escalate', err.message);
+        res.status(500).json({ error: 'Failed to escalate task', detail: err.message });
+    }
+});
+
+// Factory-wide Task Board visibility grant (Task Board Overview tab) — BE Lead only, both to
+// view and to manage. Distinct from per-tier `dmt_tier_task_viewer`: this grants a person
+// EVERY group's tasks, not just one tier's.
+app.get('/api/dmt/global-task-viewers', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        const fid = await dmtUserFactoryId(req.dmtUser);
+        const rows = await query(
+            `SELECT v.emp_id, ud.name, ud.role, v.created_at
+             FROM dmt_global_task_viewer v JOIN user_details ud ON ud.emp_id = v.emp_id
+             WHERE v.factory_id = $1 ORDER BY ud.name ASC`,
+            [fid]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET global-task-viewers', err.message);
+        res.status(500).json({ error: 'Failed to list global task viewers' });
+    }
+});
+
+app.post('/api/dmt/global-task-viewers', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        const empId = String(req.body.emp_id || '').trim();
+        if (!empId) return res.status(400).json({ error: 'emp_id is required' });
+        const fid = await dmtUserFactoryId(req.dmtUser);
+        const personRows = await query('SELECT emp_id FROM user_details WHERE emp_id = $1 AND is_active = true', [empId]);
+        if (!personRows.length) return res.status(400).json({ error: 'Must be a real, active user' });
+        const rows = await query(
+            `INSERT INTO dmt_global_task_viewer (factory_id, emp_id, added_by) VALUES ($1, $2, $3)
+             ON CONFLICT (factory_id, emp_id) DO NOTHING RETURNING *`,
+            [fid, empId, req.dmtUser.emp_id]
+        );
+        dmtAudit('dmt_global_task_viewer', rows[0]?.id || empId, 'INSERT', null, { factory_id: fid, emp_id: empId }, req.dmtUser.emp_id);
+        res.status(201).json({ success: true });
+    } catch (err) {
+        console.error('[DMT] POST global-task-viewers', err.message);
+        res.status(500).json({ error: 'Failed to add global task viewer' });
+    }
+});
+
+app.delete('/api/dmt/global-task-viewers/:empId', dmtGuard('be_lead'), async (req, res) => {
+    try {
+        const fid = await dmtUserFactoryId(req.dmtUser);
+        await query('DELETE FROM dmt_global_task_viewer WHERE factory_id = $1 AND emp_id = $2', [fid, req.params.empId]);
+        dmtAudit('dmt_global_task_viewer', req.params.empId, 'DELETE', { factory_id: fid, emp_id: req.params.empId }, null, req.dmtUser.emp_id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DMT] DELETE global-task-viewers/:empId', err.message);
+        res.status(500).json({ error: 'Failed to remove global task viewer' });
+    }
+});
+
+// Every active group a given person belongs to (member) or leads — used by the New Task form:
+// once an Owner is picked, this fills the "which group is this for" picker, rather than making
+// the assignor hunt through the whole hierarchy first to find where that person sits.
+app.get('/api/dmt/tiers/for-person/:empId', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const fid = await dmtUserFactoryId(req.dmtUser);
+        const rows = await query(
+            `SELECT t.*, mg.module AS dmt_name, jg.name AS jh_group_name
+             FROM dmt_tier t
+             LEFT JOIN module_groups mg ON mg.id = t.dmt_id
+             LEFT JOIN jh_group jg ON jg.id = t.jh_group_id
+             WHERE t.factory_id = $1 AND t.is_active = true
+               AND (t.lead_emp_id = $2 OR EXISTS (SELECT 1 FROM dmt_tier_member m WHERE m.tier_id = t.id AND m.emp_id = $2))
+             ORDER BY t.name ASC`,
+            [fid, req.params.empId]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET tiers for-person', err.message);
+        res.status(500).json({ error: 'Failed to list groups for person' });
     }
 });
 
@@ -9076,6 +11191,62 @@ app.delete('/api/dmt/tiers/:id/members/:empId', dmtGuard('jh_lead'), async (req,
     }
 });
 
+// Extra Task-Board viewers for a tier — people the incharge has explicitly given visibility
+// into this tier's tasks, beyond its automatic member/Lead-hierarchy set. Visible to anyone
+// who can see the tier at all.
+app.get('/api/dmt/tiers/:id/task-viewers', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const rows = await query(
+            `SELECT v.*, ud.name, ud.role FROM dmt_tier_task_viewer v
+             JOIN user_details ud ON ud.emp_id = v.emp_id
+             WHERE v.tier_id = $1 ORDER BY ud.name ASC`,
+            [req.params.id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET tier task-viewers', err.message);
+        res.status(500).json({ error: 'Failed to list task viewers' });
+    }
+});
+
+// Add an extra task viewer (BE Lead or this tier's own Lead).
+app.post('/api/dmt/tiers/:id/task-viewers', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const tierRows = await query('SELECT * FROM dmt_tier WHERE id = $1', [req.params.id]);
+        if (!tierRows.length) return res.status(404).json({ error: 'Tier not found' });
+        if (!dmtCanManageTier(tierRows[0], req.dmtUser)) return res.status(403).json({ error: 'Only BE Lead or this tier\'s Lead can manage task visibility' });
+        const empId = req.body.emp_id;
+        if (!empId) return res.status(400).json({ error: 'emp_id is required' });
+        const personRows = await query('SELECT emp_id FROM user_details WHERE emp_id = $1 AND is_active = true', [empId]);
+        if (!personRows.length) return res.status(400).json({ error: 'Not a real, active user' });
+        const rows = await query(
+            `INSERT INTO dmt_tier_task_viewer (tier_id, emp_id, added_by) VALUES ($1, $2, $3)
+             ON CONFLICT (tier_id, emp_id) DO NOTHING RETURNING *`,
+            [req.params.id, empId, req.dmtUser.emp_id]
+        );
+        dmtAudit('dmt_tier_task_viewer', rows[0]?.id || req.params.id, 'INSERT', null, { tier_id: req.params.id, emp_id: empId }, req.dmtUser.emp_id);
+        res.status(201).json(rows[0] || { tier_id: req.params.id, emp_id: empId, already_viewer: true });
+    } catch (err) {
+        console.error('[DMT] POST tier task-viewers', err.message);
+        res.status(500).json({ error: 'Failed to add task viewer' });
+    }
+});
+
+// Remove an extra task viewer (BE Lead or this tier's own Lead).
+app.delete('/api/dmt/tiers/:id/task-viewers/:empId', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const tierRows = await query('SELECT * FROM dmt_tier WHERE id = $1', [req.params.id]);
+        if (!tierRows.length) return res.status(404).json({ error: 'Tier not found' });
+        if (!dmtCanManageTier(tierRows[0], req.dmtUser)) return res.status(403).json({ error: 'Only BE Lead or this tier\'s Lead can manage task visibility' });
+        await query('DELETE FROM dmt_tier_task_viewer WHERE tier_id = $1 AND emp_id = $2', [req.params.id, req.params.empId]);
+        dmtAudit('dmt_tier_task_viewer', req.params.id, 'DELETE', { tier_id: req.params.id, emp_id: req.params.empId }, null, req.dmtUser.emp_id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DMT] DELETE tier task viewer', err.message);
+        res.status(500).json({ error: 'Failed to remove task viewer' });
+    }
+});
+
 // KPIs curated for a tier — visible to anyone who can see the tier at all.
 app.get('/api/dmt/tiers/:id/kpis', dmtGuard('jh_lead'), async (req, res) => {
     try {
@@ -9093,13 +11264,172 @@ app.get('/api/dmt/tiers/:id/kpis', dmtGuard('jh_lead'), async (req, res) => {
     }
 });
 
+// A KPI belongs to exactly ONE group (tier); only that group's members/Lead may enter its values.
+// Enforced here (friendly 409) and by a unique index on dmt_tier_kpi(kpi_id), applied lazily like
+// the other DMT schema tweaks (no manual SQL). If old data ever held a KPI in two groups the index
+// simply fails to build and the app-level checks below still hold.
+let _dmtKpiOneGroupEnsured = false;
+async function ensureDmtKpiOneGroup() {
+    if (_dmtKpiOneGroupEnsured || !pool) return;
+    try {
+        await query('CREATE UNIQUE INDEX IF NOT EXISTS dmt_tier_kpi_one_group ON dmt_tier_kpi (kpi_id)');
+        _dmtKpiOneGroupEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtKpiOneGroup failed (duplicate KPI assignments exist?):', e.message);
+    }
+}
+// History of KPI entries: one row when a value is first submitted, one per later edit. Applied
+// lazily like the other DMT schema tweaks (no manual SQL).
+let _dmtKpiEntryLogEnsured = false;
+async function ensureDmtKpiEntryLog() {
+    if (_dmtKpiEntryLogEnsured || !pool) return;
+    try {
+        await query(`CREATE TABLE IF NOT EXISTS dmt_kpi_entry_log (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            entry_id uuid,
+            kpi_id uuid NOT NULL,
+            reporting_date date NOT NULL,
+            action text NOT NULL CHECK (action IN ('submitted','edited')),
+            old_actual numeric, new_actual numeric,
+            old_text text, new_text text,
+            old_remarks text, new_remarks text,
+            changed_by text NOT NULL,
+            changed_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await query('CREATE INDEX IF NOT EXISTS dmt_kpi_entry_log_day ON dmt_kpi_entry_log (reporting_date, kpi_id)');
+        _dmtKpiEntryLogEnsured = true;
+    } catch (e) {
+        console.error('ensureDmtKpiEntryLog failed:', e.message);
+    }
+}
+// An entry only counts as "submitted" when it holds a value (older Save-All clicks left blank rows).
+const DMT_ENTRY_HAS_VALUE_SQL = `(e.actual_value IS NOT NULL OR (e.text_value IS NOT NULL AND btrim(e.text_value) <> ''))`;
+
+// Admin view: which KPIs have NO value for a given day. KPIs in no group are flagged because
+// nobody can enter them.
+app.get('/api/dmt/kpi-entry-status', dmtGuard('leadership'), async (req, res) => {
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date (YYYY-MM-DD) is required' });
+    try {
+        const rows = await query(
+            `SELECT km.id AS kpi_id, km.name, km.unit, km.kpi_type, d.name AS department, mod.name AS module,
+                    tk.tier_id, ${DMT_KPI_TIER_LABEL_SQL} AS group_label, lead.name AS lead_name,
+                    (SELECT count(*) FROM dmt_tier_member m WHERE m.tier_id = t.id)::int AS member_count
+             FROM dmt_kpi_master km
+             LEFT JOIN departments d ON d.id = km.department_id
+             LEFT JOIN modules mod ON mod.id = km.module_id
+             LEFT JOIN dmt_tier_kpi tk ON tk.kpi_id = km.id
+             LEFT JOIN dmt_tier t ON t.id = tk.tier_id
+             LEFT JOIN module_groups mg ON mg.id = t.dmt_id
+             LEFT JOIN jh_group jg ON jg.id::text = t.jh_group_id::text
+             LEFT JOIN user_details lead ON lead.emp_id = t.lead_emp_id
+             WHERE km.is_active = true AND km.kpi_type IN ('numeric','descriptive')
+               AND NOT EXISTS (SELECT 1 FROM dmt_kpi_entries e WHERE e.kpi_id = km.id AND e.reporting_date = $1 AND ${DMT_ENTRY_HAS_VALUE_SQL})
+             ORDER BY (tk.tier_id IS NULL), group_label NULLS LAST, km.name`,
+            [date]
+        );
+        const total = (await query(`SELECT count(*)::int AS n FROM dmt_kpi_master WHERE is_active = true AND kpi_type IN ('numeric','descriptive')`))[0].n;
+        res.json({ date, total, missing: rows });
+    } catch (err) {
+        console.error('[DMT] GET kpi-entry-status', err.message);
+        res.status(500).json({ error: 'Failed to load KPI submission status' });
+    }
+});
+
+// Admin view: who submitted what on a given day, and every later edit (old → new, who, when).
+app.get('/api/dmt/kpi-entry-audit', dmtGuard('leadership'), async (req, res) => {
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date (YYYY-MM-DD) is required' });
+    try {
+        await ensureDmtKpiEntryLog();
+        const entries = await query(
+            `SELECT e.id, e.kpi_id, e.reporting_date, e.actual_value, e.text_value, e.remarks, e.computed_status,
+                    e.is_late_entry, e.submitted_by, e.submitted_at, u.name AS submitted_by_name,
+                    km.name AS kpi_name, km.unit, d.name AS department, mod.name AS module, ${DMT_KPI_TIER_LABEL_SQL} AS group_label
+             FROM dmt_kpi_entries e
+             JOIN dmt_kpi_master km ON km.id = e.kpi_id
+             LEFT JOIN departments d ON d.id = km.department_id
+             LEFT JOIN modules mod ON mod.id = km.module_id
+             LEFT JOIN user_details u ON u.emp_id = e.submitted_by
+             LEFT JOIN dmt_tier_kpi tk ON tk.kpi_id = km.id
+             LEFT JOIN dmt_tier t ON t.id = tk.tier_id
+             LEFT JOIN module_groups mg ON mg.id = t.dmt_id
+             LEFT JOIN jh_group jg ON jg.id::text = t.jh_group_id::text
+             WHERE e.reporting_date = $1 AND ${DMT_ENTRY_HAS_VALUE_SQL}
+             ORDER BY e.submitted_at ASC`,
+            [date]
+        );
+        const edits = await query(
+            `SELECT l.entry_id, l.kpi_id, l.old_actual, l.new_actual, l.old_text, l.new_text, l.old_remarks, l.new_remarks,
+                    l.changed_by, u.name AS changed_by_name, l.changed_at
+             FROM dmt_kpi_entry_log l LEFT JOIN user_details u ON u.emp_id = l.changed_by
+             WHERE l.reporting_date = $1 AND l.action = 'edited' ORDER BY l.changed_at ASC`,
+            [date]
+        );
+        const byKpi = {};
+        for (const ed of edits) (byKpi[ed.kpi_id] ||= []).push(ed);
+        res.json({ date, entries: entries.map((e) => ({ ...e, edits: byKpi[e.kpi_id] || [] })) });
+    } catch (err) {
+        console.error('[DMT] GET kpi-entry-audit', err.message);
+        res.status(500).json({ error: 'Failed to load KPI audit trail' });
+    }
+});
+
+const DMT_KPI_TIER_LABEL_SQL =`COALESCE(t.display_name, t.name || COALESCE(' · ' || COALESCE(mg.module, jg.name), ''))`;
+
+// Which of these KPIs may this person NOT enter? Allowed = the KPI's owning group is active and
+// the person is that group's Lead or a member. No role bypass (not even BE Admin): BE Admin
+// controls access by managing group membership. A KPI with no group can't be entered by anyone.
+async function dmtKpisNotEnterableBy(kpiIds, empId) {
+    const ids = [...new Set((kpiIds || []).filter(Boolean))];
+    if (!ids.length) return [];
+    const ok = await query(
+        `SELECT tk.kpi_id FROM dmt_tier_kpi tk JOIN dmt_tier t ON t.id = tk.tier_id
+         WHERE tk.kpi_id = ANY($1::uuid[]) AND t.is_active = true
+           AND (t.lead_emp_id = $2 OR EXISTS (SELECT 1 FROM dmt_tier_member m WHERE m.tier_id = t.id AND m.emp_id = $2))`,
+        [ids, empId]
+    );
+    const allowed = new Set(ok.map((r) => r.kpi_id));
+    return ids.filter((id) => !allowed.has(id));
+}
+
+// kpi_id -> owning group, for the picker on the Tiers tab.
+app.get('/api/dmt/kpi-owners', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const rows = await query(
+            `SELECT tk.kpi_id, tk.tier_id, ${DMT_KPI_TIER_LABEL_SQL} AS tier_label
+             FROM dmt_tier_kpi tk JOIN dmt_tier t ON t.id = tk.tier_id
+             LEFT JOIN module_groups mg ON mg.id = t.dmt_id LEFT JOIN jh_group jg ON jg.id::text = t.jh_group_id::text`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET kpi-owners', err.message);
+        res.status(500).json({ error: 'Failed to list KPI owners' });
+    }
+});
+
 // Replace the full KPI set for a tier (BE Lead or this tier's own Lead). Body: { kpi_ids: [] }.
 app.put('/api/dmt/tiers/:id/kpis', dmtGuard('jh_lead'), async (req, res) => {
     try {
+        await ensureDmtKpiOneGroup();
         const tierRows = await query('SELECT * FROM dmt_tier WHERE id = $1', [req.params.id]);
         if (!tierRows.length) return res.status(404).json({ error: 'Tier not found' });
-        if (!dmtCanManageTier(tierRows[0], req.dmtUser)) return res.status(403).json({ error: 'Only BE Lead or this tier\'s Lead can manage its KPIs' });
+        if (!(await dmtCanManageTierKpis(tierRows[0], req.dmtUser))) return res.status(403).json({ error: 'Only BE Lead, this DMT\'s module lead, this tier\'s Lead, or a routing incharge can manage its KPIs' });
         const kpiIds = Array.isArray(req.body.kpi_ids) ? [...new Set(req.body.kpi_ids)] : [];
+        if (kpiIds.length) {
+            const taken = await query(
+                `SELECT km.name AS kpi_name, ${DMT_KPI_TIER_LABEL_SQL} AS tier_label
+                 FROM dmt_tier_kpi tk JOIN dmt_tier t ON t.id = tk.tier_id JOIN dmt_kpi_master km ON km.id = tk.kpi_id
+                 LEFT JOIN module_groups mg ON mg.id = t.dmt_id LEFT JOIN jh_group jg ON jg.id::text = t.jh_group_id::text
+                 WHERE tk.kpi_id = ANY($1::uuid[]) AND tk.tier_id <> $2`,
+                [kpiIds, req.params.id]
+            );
+            if (taken.length) {
+                return res.status(409).json({
+                    error: 'A KPI can belong to only one group. ' + taken.map((r) => `"${r.kpi_name}" is already in ${r.tier_label}`).join('; ') + '.',
+                });
+            }
+        }
         const before = await query('SELECT kpi_id FROM dmt_tier_kpi WHERE tier_id = $1', [req.params.id]);
         await query('DELETE FROM dmt_tier_kpi WHERE tier_id = $1', [req.params.id]);
         if (kpiIds.length) {
@@ -9111,6 +11441,34 @@ app.put('/api/dmt/tiers/:id/kpis', dmtGuard('jh_lead'), async (req, res) => {
     } catch (err) {
         console.error('[DMT] PUT tier kpis', err.message);
         res.status(500).json({ error: 'Failed to update tier KPIs' });
+    }
+});
+
+// The caller's own combined, deduplicated KPI list — every active tier (T4/T3/T2, any level)
+// they belong to, as a member OR as its Lead (Lead is a separate concept from list-membership
+// here, same as everywhere else tiers are read — a naive member-only join misses the Lead
+// entirely if they're not also separately listed). A KPI picked by more than one of the
+// caller's tiers appears once, tagged with every tier it came via.
+app.get('/api/dmt/my-tier-kpis', dmtGuard('jh_lead'), async (req, res) => {
+    try {
+        const rows = await query(
+            `SELECT km.id AS kpi_id, km.name, km.unit, km.target_value, km.direction, km.frequency,
+                    km.department_id, km.kpi_type, km.green_threshold, km.amber_threshold, km.is_active,
+                    array_agg(DISTINCT t.name ORDER BY t.name) AS via_tiers
+             FROM dmt_tier t
+             LEFT JOIN dmt_tier_member m ON m.tier_id = t.id
+             JOIN dmt_tier_kpi tk ON tk.tier_id = t.id
+             JOIN dmt_kpi_master km ON km.id = tk.kpi_id
+             WHERE t.is_active = true AND (m.emp_id = $1 OR t.lead_emp_id = $1)
+             GROUP BY km.id, km.name, km.unit, km.target_value, km.direction, km.frequency, km.department_id,
+                      km.kpi_type, km.green_threshold, km.amber_threshold, km.is_active
+             ORDER BY km.name ASC`,
+            [req.dmtUser.emp_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('[DMT] GET my-tier-kpis', err.message);
+        res.status(500).json({ error: 'Failed to load your tier KPIs' });
     }
 });
 
@@ -9126,6 +11484,6 @@ process.on('unhandledRejection', (reason) => {
 // Standalone execution entry point
 if (process.argv[1] && path.basename(process.argv[1]) === 'server.js') {
     app.listen(PORT, '0.0.0.0', () => {
-        console.log(`[Backend Server] TPM Fulcrum listening on http://0.0.0.0:${PORT}`);
+        console.log(`[Backend Server] FOCUS listening on http://0.0.0.0:${PORT}`);
     });
 }

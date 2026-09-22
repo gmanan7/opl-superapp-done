@@ -12,7 +12,7 @@ export const NAV_CONFIG = [
     { to: '/kaizen', labelKey: 'nav.kaizen', icon: Lightbulb, minRole: null, surface: 'capture' },
     { to: '/admin/mdm/people', labelKey: 'nav.people', icon: Users, minRole: 'it_lead', surface: 'admin' },
     { to: '/admin/mdm/org', labelKey: 'mdm.org.title', icon: Network, minRole: 'be_lead', surface: 'admin' },
-    { to: '/admin/mdm/machines', labelKey: 'mdm.machines.title', icon: Wrench, minRole: 'module_lead', surface: 'admin' },
+    { to: '/admin/mdm/machines', labelKey: 'mdm.machines.title', icon: Wrench, minRole: 'be_lead', surface: 'admin' },
 ];
 // Role-permitted AND on the requested surface.
 export function visibleNav(entries, role, surface) {

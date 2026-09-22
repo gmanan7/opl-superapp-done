@@ -1189,11 +1189,11 @@ MDM People / Machines / Subsections. Desktop layout re-verified unchanged.
   `api.updateMachine`/`api.setMachineActive` client methods, and fixed the hooks to call them.
   Also: `GET /api/machines` now accepts `include_inactive=true` (the "Show inactive" toggle
   silently did nothing before — the backend never returned inactive rows to filter) and joins
-  `jh_group.name` (the group header was showing the raw group UUID). **Known gap, not yet
-  built**: `machine` has no `machine_type`/`area_id` columns at all — the Area/Type filters and
-  the `area` table (unrelated to `jh_group`, keyed by `department_id` instead, currently 0 rows)
-  are placeholders with nothing behind them yet. Owner is deciding machine-assignment rules
-  separately — don't build Area/Type schema ahead of that.
+  `jh_group.name` (the group header was showing the raw group UUID). **(Superseded — see "DMT: KPI
+  ownership…" below)**: `machine` now has `machine_type`, `module_id`, `is_critical`, `display_order`
+  and a primary key. `area_id` / the `area` table still have nothing behind them (0 rows) and the
+  Area field was removed from the form. Owner is still deciding machine-to-area/department
+  assignment rules — don't build that schema ahead of them.
 - **DMT is enabled** (`ModuleSelect.jsx`) — no longer "Locked"; `handleDmtClick` navigates to
   `/dmt` and the tile has the same active styling as TPM (just blue instead of amber).
 - **Frontend-only display rename, module-picker screen only**: TPM → **"Lumos"**, DMT →
@@ -1314,12 +1314,515 @@ Stores, Product Development, Dispatch, Forwarding).
   other `seed_demo_*` scripts (`... clean` removes just what that script made). Dummy data only,
   clearly not real readings — don't mistake it for production numbers.
 
+## Module/department scoping — settled model (this session)
+
+Two earlier approaches were tried and reverted before landing here — don't rebuild either of
+the abandoned ones:
+- Tried: tagging `departments` with a `module_id` and filtering the department list per viewer.
+  Reverted — owner wanted a flat, shared department list for everyone (Scenario B).
+- **Landed on**: `departments` stays flat/shared, zero module concept on it. Instead,
+  **`user_details` gained its own `module_id`** column (FK to `modules`) — a person's module is
+  a fact about *them*, completely independent of their department. **`modules` also gained a
+  5th row: `PPB`**, representing "overall/plant-wide" — anyone tagged `PPB` is meant to have
+  full, unrestricted visibility (the same role plant-wide leadership already had elsewhere),
+  modeled as a real module rather than a null/special-case.
+- **KPI Master got its own separate, optional module tag** (`dmt_kpi_master.module_id`) — a
+  KPI can be tagged with a module (SFM/RFM/…) in addition to its (shared) department; when
+  tagged, it displays as e.g. "SFM Production" everywhere it's listed, purely a display/grouping
+  aid — the department itself is still the one shared record, not duplicated per module.
+
+## DMT Tiers — T4 / T3 / T2 review-tier system (this session)
+
+Full decision-by-decision detail lives in `DMT_DECISIONS.md` (entries 24–34) — this section is
+the code/architecture summary. A brand-new feature — none of this existed before this session.
+
+- **Schema**: 3 new tables — `dmt_tier` (`factory_id`, `name`, `is_active`, `lead_emp_id`,
+  `dmt_id` nullable FK → `module_groups`, `jh_group_id` nullable FK-less uuid → `jh_group` —
+  `jh_group.id` has no PK/unique constraint in this DB, a pre-existing gap, so this column is
+  a bare uuid with no FK), `dmt_tier_member` (`tier_id`+`emp_id`), `dmt_tier_kpi`
+  (`tier_id`+`kpi_id`). A tier is scoped to **exactly one** of factory-wide (T4, both id
+  columns null) / one DMT (T3, `dmt_id` set) / one JH group (T2, `jh_group_id` set) — DB
+  partial unique indexes enforce "at most one tier of a given name" per scope level
+  independently (`(factory_id,name) WHERE dmt_id IS NULL AND jh_group_id IS NULL`, etc.).
+- **No manual "Add tier" flow** — owner: "let us not ask users to add." The Tiers screen
+  (Organisation → **Tiers** tab, `frontend/src/dmt/pages/DmtTiers.jsx`) is 3 fixed sub-tabs
+  (T4/T3/T2); each real DMT/JH-group's row **auto-creates itself** (a `useEffect` fires the
+  create mutation once per missing row) the moment a BE Lead opens that tab. Regular members
+  never see a create action at all — they only see rows they already have visibility into.
+- **Auth is layered, not one flat rule** — `dmtCanManageTier` (BE Lead or the tier's own
+  current Lead → governs membership), `dmtCanManageTierKpis` (broader — adds DMT-level or
+  JH-group-level routing incharges on top), `dmtCanManageT2` (T2's single combined rule
+  covering **both** Lead-reassignment and KPI-picking: BE Lead, the JH group's own leader,
+  its parent DMT's module lead, or a routing incharge for that JH group specifically).
+  `dmtRoutingInchargesForDmt`/`dmtRoutingInchargesForJhGroup` resolve "routing incharge" as
+  the union of every JH group's own `leader_emp_id` (the default reviewer) plus any explicit
+  `approval_routing.approver_emp_id` for OPL/Kaizen/Abnormality, either review phase
+  (`entity_type LIKE 'opl%'/'kaizen%'/'abnormality%'`). Activating/deactivating a tier is
+  **always** BE-Lead-only at every level, no exceptions.
+- **`GET /api/dmt/tiers`** resolves and returns `can_manage_kpis` per row server-side (not
+  left to the frontend to re-derive) and applies the same authorized-set logic to *visibility*
+  for inactive-vs-active tiers: BE Lead sees everything including inactive; everyone else only
+  sees **active** tiers they're a member of, the Lead of, or a routing incharge for — a tier
+  they'd otherwise qualify to manage stays invisible to them while inactive.
+- **KPI picking has no department restriction** — any active KPI, any department, can be
+  added to any tier's shown-KPI set (`frontend`'s `KpiPickerDialog` has an optional department
+  filter purely for narrowing a long list, not an access restriction).
+- **"My Tier KPIs" dashboard card** (`GET /api/dmt/my-tier-kpis`, card in
+  `DmtDashboard.jsx` above "My Dashboard") — combined, deduplicated KPI list across every
+  **active** tier the caller belongs to, as **member OR Lead** (Lead is a separate concept
+  from list-membership everywhere in this system — a naive member-only join misses a Lead
+  who isn't also separately listed, verified as a real gap during dry-run, not hypothetical).
+  A KPI picked by more than one of the person's tiers appears once, tagged `via_tiers` (e.g.
+  "via T2, T3"). Card renders nothing at all for anyone belonging to zero tiers.
+- **Verified end-to-end, self-cleaning, multiple passes** — tier auto-creation, DB-enforced
+  uniqueness per scope level, every authorization rule tested with both a real unauthorized
+  user (403) and a real authorized one (200) at each tier level, default-Lead correctness on
+  creation, and the dashboard dedup query including the Lead-not-listed-as-member case.
+
+## DMT Task Board — tier-based visibility, replacing ad-hoc Groups (this session)
+
+Full decision-by-decision detail lives in `DMT_DECISIONS.md` (entries 35–45) — this section is
+the code/architecture summary. The old ad-hoc "Groups" feature (`dmt_task_groups`/
+`dmt_task_group_members`, custom-team creation, `/api/dmt/my-task-groups`) was **deleted
+outright** and replaced by the T4/T3/T2 tier system as the one task-visibility mechanism.
+`dmt_tasks` gained a nullable `tier_id` column (FK → `dmt_tier`, `ON DELETE SET NULL`); the old
+`task_group_id` column and its tables are left in place but dead — don't wire new UI to them.
+
+- **`dmtVisibleTierIdsFor(dmtUser)`** (`server.js`, near the other tier helpers) is the single
+  source of truth for "which tiers' tasks can this person see," used both for the LIST query's
+  visibility filter and for validating a task's `tier_id` at create time (`dmtValidateTask`,
+  wired as `DMT_RESOURCES.tasks.validate`). The rule, per owner direction:
+  - Ordinary **membership** of a tier (incl. being listed as its Lead) grants visibility of
+    only that one tier's own tasks — it does **not** cascade to tiers nested beneath it.
+  - ~~Being the **Lead** of a tier additionally grants visibility of every tier nested beneath
+    it (a T3 Lead sees its DMT's T2s; a T4 Lead sees the whole factory).~~ **REMOVED, a later
+    session** — there is no downward cascade of any kind now; see "DMT escalation, task
+    permissions…" below and `DMT_DECISIONS.md` #73–74.
+  - **BE Lead sees every tier outright**, no exceptions — same blanket authority
+    `dmtCanManageTier` already gave them, extended to tasks.
+  - An explicit **`dmt_tier_task_viewer`** grant (tier_id + emp_id + added_by) lets a tier's
+    incharge (BE Lead or that tier's own Lead) name specific extra people who see just that
+    tier's own tasks without being a full member — managed via
+    `GET/POST /api/dmt/tiers/:id/task-viewers` + `DELETE .../task-viewers/:empId`, same
+    `dmtCanManageTier` auth as the member endpoints. This also feeds `dmtValidateTask`, so a
+    granted viewer can create tasks tagged to that tier too, not just see them.
+  - **Consequence (current)**: a person can only tag a task to a group they can see, i.e. one they
+    are a member/Lead of (or BE Admin / an Overview-list viewer) — a T3 Lead can no longer tag a
+    task to a child T2 they don't belong to (that used to work under the removed cascade).
+- **The scoped LIST query** (`dmtBuildFilter`'s `cfg.scoped` branch) replaced its old
+  `task_group_id IN (...)` join with `tier_id = ANY($visibleTierIds)`, where `visibleTierIds`
+  comes from `dmtVisibleTierIdsFor`. A task with `tier_id IS NULL` stays exactly as before
+  (public unless `is_private`, or visible to its owner/assigner/creator).
+- **All 3 task-creation surfaces carry the same Tier picker and the same server-side
+  validation** — Task Board's "New Task", the Dashboard's "Create Task from Red KPI"
+  (`DmtDashboard.jsx`), and a Meeting's red-KPI task dialog (`DmtMeetingWorkspace.jsx`). One
+  rule everywhere; don't add a 4th creation path without wiring the same `tier_id` field.
+- ~~Meeting-to-tier auto-linking is explicitly deferred~~ **Built, a later session.**
+  `dmt_meetings` now has its own `tier_id` (see "Decision Log tier-scoping..." section below) —
+  a meeting created from a red-KPI task dialog could inherit it, but that specific wiring
+  wasn't revisited; verify before assuming it's connected.
+- **Task Board filter UI — settled on the simple version.** Several visual pickers were tried
+  live (breadcrumb drill-down, multi-select checkbox tree, searchable combobox, full SVG
+  org-chart with measured curved connectors) and all rejected in favor of the **original
+  cascading-dropdown version**: a T4 toggle chip + a "Filter by DMT" dropdown + a dependent
+  "Filter by JH Group" dropdown that only appears once a DMT is picked (`DmtTaskBoard.jsx`,
+  `t4Selected`/`dmtFilterId`/`t2FilterId` state, `tierFilterIds` memo). Don't rebuild the
+  fancier versions unless asked again — they were built, demoed, and explicitly turned down.
+- **Default scope**: everyone opens the Task Board on **"My Tiers"** (their own tier tasks +
+  public/own tasks), with an "All I can see" toggle to widen it — except **BE Lead**, who has
+  no meaningful "My Tiers" concept (role-based access, not membership-based) and always shows
+  a fixed "All (factory-wide)" label instead of the toggle; and anyone belonging to **zero**
+  tiers, who silently falls back to "All" so they never land on a confusing empty board.
+- **Filter chips, confirmed working as designed**: My Tasks (you're the owner), Overdue (due
+  date passed, not closed), Due Today, Carryover (due date pushed at least once via the real
+  due-date-change endpoint, `dmt_task_updates` with `update_type='due_date_change'`, still open).
+- **Real bug found and fixed at the database level**: `dmt_tier`'s `dmt_tier_factory_name_no_dmt`
+  unique index was defined as `(factory_id, name) WHERE dmt_id IS NULL` — missing
+  `AND jh_group_id IS NULL` — which silently capped the **entire factory** to one T2 tier ever,
+  not one per JH group as designed. Invisible until this session because the org had only ever
+  had 1 real JH group. Corrected on the live database; verified by successfully creating 20.
+- **`backend/tools/seed_demo_task_board.mjs`** (self-cleaning, `... clean` to remove) — builds
+  5 dummy DMTs × 4 JH groups (20 total, all active tiers with Leads/members) and ~56 dummy
+  tasks with varied due dates, a few genuine carryovers pushed via the real due-date-change
+  endpoint. Built specifically to stress-test tier visibility/filtering beyond the 1-real-group
+  scale the org had before.
+
+## Decision Log tier-scoping, Task Board fixes, and T4 becomes a real multi-group feature (this session)
+
+Full decision-by-decision detail (why, not how) lives in `DMT_DECISIONS.md` (entries 46–57) —
+this section is the code/architecture summary.
+
+- **Decision Log is now tier-scoped through its meeting, not its own tag.** `dmt_meetings`
+  gained `tier_id` (and `dmt_meeting_templates` gained one too, inherited by any meeting
+  created from that template). `GET /api/dmt/meetings` is now `scoped: true` on the generic
+  DMT_RESOURCES engine — reused the exact same tier-visibility clause Task Board already used,
+  generalized via a new `cfg.scopedIdentityCols` option (was hardcoded to
+  `owner_id`/`assigned_by`; meetings use `facilitator_id`/`created_by` instead) and a
+  `hasPrivate` check (meetings have no `is_private` column, tasks do). `DmtDecisionLog.jsx`
+  needs **zero** extra filtering of its own — a decision whose meeting isn't in the
+  already-scoped meetings list simply never matches during the existing
+  `meetingById` lookup. Same "My Tiers / All I can see" toggle as Task Board, client-side only
+  (narrows an already-server-scoped list down to tiers you're a direct member/Lead of).
+- **T4 is no longer a singleton, silently-auto-created tier.** `dmt_tier` gained a
+  `display_name` column (nullable — falls back to plain "T4" when unset/cleared), and the old
+  `dmt_tier_factory_name_no_dmt` unique index (which capped a factory to exactly one T4 row)
+  was dropped. `POST /api/dmt/tiers` now requires `lead_emp_id` when creating a T4-level tier
+  (no `dmt_id`/`jh_group_id`) — a real, active user, validated server-side — and sets
+  `is_active = true` immediately (a deliberate BE-admin action shouldn't need the extra
+  activate step the old silent auto-create needed). `tierLabel()` (`taskExtras.js`) now checks
+  `display_name` first, before the generated "T3 · DMT" / "T2 · JH Group" fallback.
+  `DmtTiers.jsx`'s `T4Panel` lists every T4-level tier (was: find-or-auto-create exactly one)
+  with a "New T4 Group" dialog (name optional, Lead required) gated to BE Lead; `T3Panel`/
+  `T2Panel` are untouched.
+- **Renaming**: inline pencil-icon edit on the group's own card, gated by `dmtCanManageTier`
+  (BE Lead or that tier's own Lead) — same rule already used for members/task-viewers.
+  `PATCH /api/dmt/tiers/:id` accepts `display_name` under that same auth check (separate from
+  the existing `is_active`-is-BE-Lead-only and `lead_emp_id` checks on that same endpoint).
+- **Every meeting must belong to a group, and only that group's Lead or BE admin may
+  create/retarget it.** `dmtValidateMeeting` (was a thin alias for the generic
+  `dmtValidateTierTag`) is now its own function: 400s a create with no `tier_id` (via a new
+  `{ isCreate }` third argument threaded through from the generic POST handler — PATCH doesn't
+  pass it, so editing an existing meeting without touching `tier_id` isn't forced to re-supply
+  one), then re-runs the existing visibility check, then 403s unless `dmtCanManageTier` passes
+  for that specific tier. This is enforced identically whether the meeting is created from
+  `DmtMeetings.jsx`'s "New Meeting" or a tier card's own "Create Meeting" button (which now
+  passes `initialTierId` into the same `CreateMeetingDialog`, exported from `DmtMeetings.jsx`
+  rather than kept private, and hides the Template picker + locks the tier field in that mode
+  so a picked template can't silently redirect the meeting to a different group).
+- **Facilitator defaults to the picked tier's `lead_emp_id`** (a `useEffect` keyed on
+  `f.tier_id`, re-firing on manual tier change, template inheritance, or a fixed
+  `initialTierId`) — still a plain editable dropdown afterward. The old role-filtered
+  facilitator list (`leadership`/`be_lead`/`it_lead`/`admin`/`module_lead` only) was dropped
+  entirely in favor of "any active worker," since a BE-admin-appointed Lead can be any role.
+- **Real recurring meetings** (weekly-only, mirrors Audits' owner-approved minimal recurrence
+  UI — no frequency dropdown). `dmt_meetings` gained `series_id` (nullable uuid, no FK — pure
+  grouping tag). `buildOccurrenceDates()` in `DmtMeetings.jsx` is a pure helper: Never (capped
+  at 26 occurrences ≈ 6 months), On-date, or After-N. Each occurrence is created as an
+  ordinary, independent `dmt_meetings` row via a normal loop of `dmtApi.create` calls (not a
+  lazy schedule/occurrence split like Audits) — so attendance, decisions, and KPI snapshots
+  all keep working per-instance with zero changes elsewhere; `series_id` is purely a shared
+  tag, nothing reads it yet beyond storage.
+- **Group deletion**: `DELETE /api/dmt/tiers/:id`, `dmtGuard('be_lead')` — no carve-out for the
+  tier's own Lead (deliberately stricter than every other tier-management endpoint, which all
+  allow BE Lead OR the tier's Lead). Relies entirely on existing FK behavior: `dmt_tier_member`/
+  `dmt_tier_kpi`/`dmt_tier_task_viewer` are `ON DELETE CASCADE` (pure junction rows); `dmt_tasks`/
+  `dmt_meetings`/`dmt_meeting_templates`.`tier_id` are all `ON DELETE SET NULL` — nothing there
+  needed to change. Frontend only renders the delete icon when `!tier.is_active`, so
+  deactivating is a forced first step. Deactivating itself (flipping the Switch off) now opens
+  a confirm dialog first (`deactivateOpen` state) — flipping it back on stays a single click,
+  no confirm, since reactivating is harmless.
+- **Lead-change confirmation**: picking a new Lead from the dropdown no longer applies
+  immediately — it stages the pick (`pendingLead` state: `{id, name}`) and opens a dialog
+  naming the current Lead (`tier.lead_name`) and the incoming one before calling
+  `updateTier.mutate`. Cancelling just clears the staged pick; the `<Select>` is controlled by
+  `tier.lead_emp_id` so it reverts on its own.
+- **T4 list sort**: active groups before inactive ones (`t4Tiers.sort((a,b) => (b.is_active?1:0)
+  - (a.is_active?1:0))`), stable otherwise.
+- **Task Board bugs found and fixed this session**:
+  - Clicking a task row on **Task Overview** (`DmtAdminTaskOverview.jsx`) navigated to
+    `/dmt/tasks` but never opened the actual task — fixed with a `?open=<taskId>` query param
+    that `DmtTaskBoard.jsx` reads once on mount to auto-open that task's detail sheet, then
+    clears the param. **Guard with a `useRef`, not just the param itself** — `tasks.rows` is a
+    brand-new array every render (built fresh in `useDmtTasks`), so an effect with `tasks.rows`
+    in its dependency array re-fires on every render for as long as `open` lingers in the URL,
+    silently reopening a drawer the user just closed. The ref (`openedRef.current`) makes the
+    auto-open fire exactly once per link, independent of how many times the effect re-runs.
+  - The Sheet-based drawer's close (✕) button (`components/ui/sheet.jsx`,
+    `SheetPrimitive.Close`) had **no padding at all** — a genuinely tiny 16×16px hit target
+    (icon size with zero surrounding click area), easy to miss on a real click. This is the
+    shared primitive every `Sheet` in the app uses (Task Board's detail drawer, any future
+    one), not a Task-Board-only fix. Enlarged to 28×28px (`p-1.5`, position nudged from
+    `right-4 top-4` to `right-3 top-3` to keep the icon visually in the same spot) plus a
+    `hover:bg-secondary` affordance now that there's a real box to hover.
+- **DMT sidebar nav scrollbar hidden** (`.no-scrollbar` utility added to `index.css`, applied
+  to `DmtShell.jsx`'s `<nav>`) — purely cosmetic, the panel still scrolls the same way, just
+  without a visible track/thumb.
+- **Demo data**: `backend/tools/seed_demo_decision_log.mjs` (self-cleaning, `... clean` to
+  remove) — one small demo DMT + JH group, T4/T3/T2-tagged meetings (3 rounds) each with 3
+  decisions (mixing linked overdue/completed tasks and no-task decisions), used to verify
+  Decision Log's tier-scoped visibility end to end at every tier level.
+
+## DMT Hierarchy tab, Task Board Overview, and New Task rework (this session)
+
+Full decision-by-decision detail (why, not how) lives in `DMT_DECISIONS.md` (entries 58–72) —
+this section is the code/architecture summary.
+
+- **New Hierarchy tab** (Organisation → Hierarchy, `DmtHierarchy.jsx`) renders the T4→T3→T2
+  reporting structure as a classic top-down org chart (pure-CSS `::before`/`::after` connector
+  trick, horizontal scroll if it's wider than the panel — an auto-scale-to-fit version and a
+  rotated left-to-right version were both tried live and rejected). **Renders ONLY explicit
+  `parent_tier_id` links** — a group with no link set isn't placed in the tree at all, not even
+  under a guessed default; it only appears in a separate "groups without an explicit link" list
+  below the chart, with its own inline "Reports to" picker. Every "Reports to" dropdown across
+  the app is blank unless a link was actually saved (never pre-filled with a resolved default),
+  and offers a "— Clear link —" sentinel option to undo a link with no separate confirm modal.
+- **`dmt_tier.parent_tier_id`** (new, nullable, self-referencing FK) is what makes an explicit
+  link possible at any level. Backend validation (`dmtValidateParentTier`) enforces: a T3-level
+  group may only link to a T4; a T2-level group may link to a T3 **or** a T4 directly (skipping
+  T3 is allowed — some JH groups have no DMT-level group above them). "Level" here is decided by
+  `name` ('T3'/'T2'/'T4'), not just `dmt_id`/`jh_group_id`, because a standalone/custom group
+  (see next bullet) has both of those null just like T4 does.
+- **T3 and T2 can now be standalone/custom groups**, same shape T4 already had — a name + a Lead,
+  not tied to any real DMT/JH group. Creating a group is now **BE Admin only** (tightened in a
+  later session); relinking ("Reports to") stays **BE Lead or a T4 group's own Lead**
+  (`dmtIsBeOrT4Lead`, new) — T3/T2 no longer
+  silently auto-create for anyone who opens the Tiers page; that auto-create `useEffect` was
+  removed from `T3Panel`/`T2Panel` entirely. `CreateScopedGroupDialog` (`DmtTiers.jsx`) offers
+  "Link to a real DMT/JH group" (disabled once none remain unlinked) or "Custom group" as two
+  explicit modes, with an optional "reports to" pick at creation time.
+- **`resolveDmtHierarchyTree(allTiers, moduleGroups, jhGroups)`** (`lib/dmtHierarchyTree.js`,
+  new, pure function) is the single source of truth for "what links to what" — both
+  `DmtHierarchy.jsx` and `DmtTaskBoard.jsx`'s group filter call this same function now, instead
+  of each maintaining its own notion of "which DMT owns which JH group" (the old Task Board
+  filter grouped by raw `jh_group_dmt_id`, ignoring Hierarchy links entirely, so a group could
+  show up under a different parent in the filter than where the chart actually placed it).
+- **Groups are colored by LEVEL, not chart position** (T4 blue / T3 violet / T2 emerald,
+  `NodeBox`'s `tone` prop) — needed because a T2 linked directly to T4 renders one row up from
+  where T2s normally sit, in the same visual column T3 usually occupies.
+- **Old per-tier task-viewer grant removed from the UI.** The "Task Board visibility / Add"
+  box on each Tiers card (`AddTaskViewerDialog`, the `dmt_tier_task_viewer` management UI) is
+  gone — owner confirmed removing it despite it being a real access grant, not just a filter.
+  The underlying table/data and backend read-path are untouched, just no longer editable here.
+- **New factory-wide replacement: Task Board Overview tab** (Organisation, BE-Lead-only,
+  `DmtTaskBoardOverview.jsx`). New `dmt_global_task_viewer` table (`factory_id`, `emp_id`,
+  `added_by`, unique per factory+person) + `GET/POST /api/dmt/global-task-viewers` +
+  `DELETE .../global-task-viewers/:empId`. `dmtVisibleTierIdsFor` now also returns every tier
+  when the caller is a global task viewer, same branch as the existing BE-Lead check. Private
+  tasks are unaffected either way — they were never tier-scoped to begin with.
+- **Task Board's group filter is now a multi-select hover-flyout** built from
+  `resolveDmtHierarchyTree` (`DropdownMenuCheckboxItem` + `DropdownMenuSub` for DMTs with JH
+  children), replacing the old single-choice T4-chip/DMT-dropdown/JH-dropdown cascade. **The
+  separate "My Tiers / All I can see" Scope toggle (and BE Admin's fixed "All (factory-wide)"
+  pill) was removed entirely** — default (nothing picked in the group filter) is "my own tiers +
+  untagged tasks," and anyone belonging to zero tiers (BE Admin, or a global task viewer with no
+  personal membership) sees everything by default instead. Department and a later-considered
+  Module filter were both explicitly rejected — Task Board filtering stays to Groups + Priority
+  (+ the existing status-based Kanban/List views) only.
+- **New Task is now Owner-first.** `SearchableOwnerPicker` (type-to-filter panel, not a plain
+  `<Select>` — the worker list doesn't scale to scrolling by hand) replaces the old Owner
+  dropdown. Picking an Owner calls the new `GET /api/dmt/tiers/for-person/:empId` (every active
+  group that person is a member of or leads) and offers those as the visibility pick — **not**
+  the old approach of picking a group/tier first and filtering Owner by its members. Department
+  auto-fills from the owner's own `user_details.department_id` (now selected in
+  `/api/worker-names`, alongside `module_id`), never picked by hand. **An owner in zero groups
+  forces the task private** (owner + assignor + admins only) instead of the old default of
+  `tier_id = NULL` meaning visible to literally everyone in the factory — the private checkbox
+  is hidden in this case since there's nothing left to toggle.
+- **`modules`/`user_details.module_id`** (SFM/RFM/Labels/Flexibles/PPB — `GET
+  /api/org/module-names`) is a **separate real master list**, unrelated to the DMT/
+  `module_groups` (DMT) hierarchy tree despite the similar name. A "Department + Module"
+  owner-search mode was built using this table, then removed again per owner direction
+  (judged overkill once Owner-first existed) — don't reintroduce without being asked, and don't
+  conflate this table with `module_groups` (DMTs) if "module" comes up again.
+- **Backend has no file-watcher in this dev environment** (`node server.js`, not
+  `node --watch server.js`, despite Hard Rule 5's guidance) — every backend edit this session
+  needed a manual kill + restart, confirmed via a live `curl` check before treating any
+  backend change as live. Check this before assuming a server-side fix has taken effect.
+
+## DMT escalation, task permissions, private groups, Task Board redesign (this session)
+
+Full decision-by-decision detail (why, not how) lives in `DMT_DECISIONS.md` (entries 73–86) —
+this section is the code/architecture summary. **Several entries there reverse older ones
+(#36, #62, #66); this section is the current truth.**
+
+- **Visibility is membership-only, no cascade.** `dmtVisibleTierIdsFor` (server.js) returns:
+  every tier for BE Lead-tier or a `dmt_global_task_viewer` (Task Board Overview list); otherwise
+  ONLY tiers the caller is a member/Lead of + explicit `dmt_tier_task_viewer` rows. A T4/T3 Lead
+  gets nothing extra; a Hierarchy `parent_tier_id` link and the real DMT→JH group relationship
+  grant nothing. `dmtValidateTierTag` (task/meeting tier tagging) uses the same set. The one
+  exception: the scoped task LIST also has `OR escalated_to_tier_id = ANY(visibleTierIds)` (added
+  in `DMT_RESOURCES` LIST handler, only for `dmt_tasks` and only once `_dmtEscSchemaEnsured`).
+- **Groups.** `POST /api/dmt/tiers` is **BE Admin only** (`dmtTierAtLeast be_lead`). Optional
+  `is_private` (BE only; column `dmt_tier.is_private`) — same visibility as any group, only a flag
+  for escalation. `dmt_tier.escalation_days` (int 1–365, **default 90**, NULL = off) is set with
+  `PATCH /api/dmt/tiers/:id` `{escalation_days}` (BE only; 400 for a T4 or a private group). New
+  T4/private groups are created with NULL; other new groups with 90. UI: `DmtTiers.jsx`
+  (`PrivateGroupCheckbox` in the three New-group dialogs, a "Private" badge, and an Auto-escalation
+  box with a red Turn-off button on each non-T4, non-private card).
+- **Schema is applied lazily at startup, no manual SQL** (same convention as
+  `ensureNotificationSchema`): `ensureDmtEscalationSchema()` adds `dmt_tasks.escalated_at /
+  escalation_type / escalated_to_tier_id / escalated_from_owner_id / escalated_by /
+  escalation_note`, `dmt_tier.escalation_days` (+ a ONE-TIME backfill to 90 keyed on the column
+  default so a later "Turn off" is never re-enabled by a restart), and adds `'escalation'` to the
+  `dmt_task_updates.update_type` CHECK; it sets `_dmtEscSchemaEnsured`. `ensureDmtTaskDeptNullable()`
+  runs `ALTER TABLE dmt_tasks ALTER COLUMN department_id DROP NOT NULL`. The `.sql` files in
+  `backend/sql/` (`dmt_task_escalation.sql`, `dmt_tier_private.sql`) are the record. A
+  `dmt_escalation_setting` table (an abandoned per-plant version) may still exist in the DB — dead,
+  don't build on it.
+- **Escalation engine (server.js, DMT section).** `dmtEscalateTask(task, {toTierId, toEmpId, type,
+  by, note})` moves **ownership** to the recipient, records `escalated_from_owner_id`, writes a
+  `dmt_task_updates` row (`update_type='escalation'`), audits and `notify()`s (kind
+  `dmt_task_escalated`, module `'dmt'`). `sweepDmtEscalations()` runs hourly + 20s after boot: an
+  unfinished, non-private task in an active, non-private group with `escalation_days` set, whose
+  group has an active `parent_tier_id` parent with a Lead (≠ owner), is escalated once when
+  `due_date + escalation_days <= today`. `POST /api/dmt/tasks/:id/escalate` (`to_tier_id` → that
+  group's Lead, or `to_emp_id`, optional `note`) and `GET /api/dmt/escalation-targets` (active,
+  non-private groups). Private *tasks* (`is_private`) never escalate; tasks of a private *group*
+  can be escalated by hand. An escalated task's group can't be changed; reassigning it is limited
+  to the current owner and to members of `escalated_to_tier_id`.
+- **Only the assigner and the assignee can act on a task** — `dmtCanActOnTask(task, empId)`
+  (`owner_id` or `assigned_by`) + `DMT_TASK_ACT_ERR`, enforced in the named ops
+  (`status`, `due-date`, `fields`, `comment`, `escalate`) AND the generic PATCH/DELETE via
+  `DMT_RESOURCES.tasks.canModify`. Nobody else — not BE Admin, module lead, group Lead or
+  Overview-list viewer. Frontend mirror: `canAct(task, me)` in `DmtTaskBoard.jsx` (no Actions /
+  Edit / Change Due Date / comment box otherwise).
+- **Task status rules.** `dmtAutoStartIfOwner`: an Open task becomes In Progress on its OWNER's
+  first comment / edit / due-date change (not on a reassignment, not for anyone else); history note
+  "Started automatically…". `POST …/status` with `new_status:'blocked'` needs a non-blank `note`
+  (400); the drawer shows it in a red "Blocked" box.
+- **`POST …/fields`** now accepts `title, description, owner_id, priority` and `tier_id`/`is_private`
+  (group change: not when escalated; caller must see the group; the owner must be in it; `tier_id:null`
+  requires `is_private:true`). **No department** — `department_id` is out of the tasks `cols`
+  whitelist (the server ignores it), out of every task form/card/export, and the Admin Task
+  Overview + Analytics group by `tier_id` ("Not in any group" when null). Old rows keep their
+  department value, unused.
+- **Task Board frontend (`DmtTaskBoard.jsx`).** Columns Open / In Progress / Blocked / **Escalated** /
+  Completed / Cancelled; escalated unfinished tasks appear ONLY in Escalated (`isEscalatedActive`).
+  `COL_PAGE_SIZE = 4` with a per-column pager; fixed-size (148px) cards showing title, priority +
+  due/overdue, the source meeting (name + date, from a `meetings` lookup keyed by
+  `origin_meeting_id`) and assignee + group — or a From | To block when escalated. Card colour is
+  viewer-relative (`escalationFor`): amber = escalated up to me/my group, blue = my group's task
+  sent up, violet = between groups I'm not in; an Escalated-column dropdown filters those.
+  A **Columns** menu hides columns per person (`safeStorage` key `dmt_taskboard_cols_<emp_id>`).
+  BE Admin opens on every task (`belongsToNoTiers = tierAtLeast('be_lead') || …`); everyone else on
+  their own groups + untagged + unfinished escalations. Edit Task = title, description, owner
+  (`SearchableOwnerPicker`), group (`GET /api/dmt/tiers/for-person/:empId`), priority. The
+  notification bell (`NotificationBell.jsx`, now with a **Tasks** tab, route `/dmt/tasks`) is also
+  mounted in `DmtShell.jsx`.
+- **Test / dry-run tooling** (all self-cleaning; hit the REAL API + DB): `backend/tools/
+  seed_demo_escalation.mjs` (demo groups/tasks, `… verify` after the sweep, `… clean`),
+  `test_task_flow.mjs` (auto-start, blocked reason, actor rules, no-department, group editing) and
+  `test_viewers_readonly.mjs` (people who see everything are read-only). `server.js` now reads
+  `PORT` (`Number(process.env.PORT) || 3000`) so a **separate test copy** can run on e.g. 3111
+  (`PORT=3111 node server.js`, point scripts with `DEMO_API=http://localhost:3111/api`) without
+  touching the owner's backend on 3000 — never kill port 3000. The sweep fires ~20s after boot.
+- **Gotchas found.** In DMT, `111111` (it_lead) and `444444` (be_lead) both map to the BE tier —
+  use `222222/333333/555555/666666/777777` for non-BE test users. The browser pane forgets its
+  seeded `tpm_session` when it is reopened (you land on `/login`) — re-seed it. Backend changes
+  still need a manual restart of the owner's process; a passing dry run on the test copy says
+  nothing about their running instance.
+
+## DMT: KPI ownership & entry, KPI tabs, PM Schedule rebuild, task-form fixes (this session)
+
+Full decision-by-decision detail (why, not how) lives in `DMT_DECISIONS.md` (entries 87–106).
+
+- **KPI ownership.** One KPI belongs to exactly ONE group: unique index `dmt_tier_kpi_one_group`
+  (lazy `ensureDmtKpiOneGroup()`), `PUT /api/dmt/tiers/:id/kpis` 409s naming the current owner,
+  `GET /api/dmt/kpi-owners` feeds the picker (KPIs owned elsewhere show greyed "In <group>").
+- **Who may enter a KPI value.** `dmtKpisNotEnterableBy(kpiIds, empId)`: the KPI's owning group must
+  be active and the person its member or Lead. **No role bypass — BE Admin included** (BE Admin
+  controls access by managing membership); a KPI in no group can't be entered by anyone. The generic
+  `kpi-entries` resource is `readOnly: true` (405 on POST/PATCH/DELETE); values are written only by
+  `POST /api/dmt/kpi-entries/upsert`, which skips blank rows, 400s a row missing `kpi_id`/date (it
+  used to skip silently), and treats a save on an already-valued day as an EDIT: the ORIGINAL
+  submitter/late flag are kept, an unchanged save is a no-op, and every submit/edit is logged in
+  `dmt_kpi_entry_log` (lazy `ensureDmtKpiEntryLog()`). An entry only counts as submitted if it
+  holds a value (~7 old blank rows exist). Project Tracker item CREATE is group-checked the same
+  way; editing/deleting an existing item still follows the old rule.
+- **KPI Entry page** (`DmtKpiEntry.jsx`): no department picker — it lists `/api/dmt/my-tier-kpis`
+  (that endpoint names the id `kpi_id`; the page maps it to `id` — forgetting this made every save
+  silently do nothing). Submitted rows lock; per-row Edit / Cancel; button reads "Save N KPIs".
+- **Organisation tabs (leadership tier+):** *KPI Not Submitted* (`GET /api/dmt/kpi-entry-status?date`,
+  flags KPIs in no group), *KPI Audit Trail* (`GET /api/dmt/kpi-entry-audit?date`), *PM Schedule Edit
+  Access*, *PM Schedule Audit Trail*. Filters/paging are client-side: `DmtKpiFilters.jsx`
+  (`KpiFilterBar`, `optionsFrom`, `deptLabel`) + the shared `ListPager`; cascade Module →
+  Department → Group, Module options = the full `modules` list, KPI department shown as
+  "<module> <department>".
+- **PM Schedule.** Everyone views; BE Admin (always — #108, reversing the earlier "no role bypass") and
+  the people in `dmt_pm_editor` edit (list managed in the tab, BE-only writes). Enforced by a resource-level `editGuard` in
+  `dmtWriteGuard` on `pm-plan`/`pm-actual`. The calendar shows ONLY machines in `dmt_pm_machine`
+  (editors pick from the master via "Add machines", X per machine to remove; removal keeps
+  plan/actual history; machines added to the master later stay off until picked):
+  `GET /api/dmt/pm-machine-list`, `GET /api/dmt/pm-machine-master` (editors only),
+  `POST/DELETE /api/dmt/pm-machine-select`. Old `dmt_pm_machines` is a read-only backup (`readOnly`).
+  **Audit trail:** `dmt_pm_log` written by `dmtPmLog()` (never throws) from a new generic
+  `afterWrite(action, before, after, user)` hook on `DMT_RESOURCES` plus the machine-select and
+  editor endpoints; `GET /api/dmt/pm-audit?from&to`. It had NO history before shipping — earlier
+  PM changes can't be recovered. Tables `dmt_pm_editor`/`dmt_pm_machine`/`dmt_pm_log` are created
+  lazily by `ensureDmtPmEditor()`.
+- **PM page UI** (`DmtPmSchedule.jsx`): view-only by default; Edit → Plan/Actual switch + "Add
+  machines" + "Done editing". Filter buttons = modules present. Legend = the seven colour squares
+  behind an "i" dropdown, built from `CELL_CLASS`; the "2 days" rule is one constant,
+  `PM_GRACE_DAYS` in `lib/pmSchedule.js`, used by `getCellState` AND the legend text. No "view
+  only…" hint text for anyone.
+- **Machine master (TPM, `pages/admin/mdm/Machines.jsx`).** Form = Name, JH Group, Module
+  (`machine.module_id` → `modules`), Machine type (`machine.machine_type`, the PM group heading),
+  Critical, plus the Active/Deactivate button. Code stays in the DB but is off the form (`PUT`
+  preserves any field the caller doesn't send); Area removed. Group-less machines are valid
+  (page heading "No JH Group"; editing one doesn't force a group). `machine` had NO primary key
+  before — `machine_pkey` was added. Migrations, in order, all in `backend/sql/`:
+  `pm_machines_to_machine.sql` → `pm_machine_selection.sql` → `machine_module_and_type.sql` (apply
+  with a small node script that reads `.env`; a Claude session may not be able to use `psql`).
+  **Renaming a column breaks the running backend until the owner restarts it** (it errored with
+  `column m.line does not exist`).
+- **Task Board fixes.** New Task / Edit Task group pickers use `useAssignableGroups` in
+  `DmtTaskBoard.jsx` (owner's groups ∩ creator's member/Lead groups; BE Admin all; none shared →
+  private) so the form never offers a group the server refuses; the server rule is unchanged.
+  `POST …/fields` logs a `group_change` Activity entry (extended `dmt_task_updates.update_type`
+  CHECK, applied in `ensureDmtEscalationSchema`).
+- **Login cache bug.** `lib/queryClient.js` is the one shared TanStack client; `saveSession` /
+  `clearSession` (`lib/auth.js`) call `queryClient.clear()`. Before this, DMT's `['dmt','me']` role
+  (cached 10 min, not keyed by user) leaked between users in one tab.
+- **Layout.** `DmtShell.jsx`'s content column and `<main>` need `min-w-0` (same lesson as the TPM
+  AppShell) — a wide table stretched the whole page. The dev frontend needs a FULL page reload after
+  shell/layout edits (HMR didn't apply them).
+- **Testing recipe used (all self-cleaning).** Test backend copy `PORT=3111 node server.js`; in the
+  browser pane load an SPA page, override `window.fetch` to send `/api` to `http://localhost:3111`, then
+  navigate by clicking sidebar links (a full navigation drops the override); seed `tpm_session` per user
+  and clear it afterwards. Users: 222222 operator, 333333 JH Leader (jh_lead tier), 444444 BE Admin
+  (the owner also uses these accounts, so distinguish test rows by time window, not by user). Never kill
+  port 3000 — the owner restarts it manually, and until then new endpoints 404 and renamed columns 500.
+
+## DMT: PD Cycle access, audit trail, page rework (this session)
+
+Detail in `DMT_DECISIONS.md` (#107–110). **#108 reverses the PM "no role bypass" rule: BE Admin tier can always edit the PM Schedule and the PD Cycle** (`dmtCanEditPm` / `dmtCanEditPd` return true for `be_lead` tier); everyone else needs a row in `dmt_pm_editor` / `dmt_pd_editor` (Organisation → "… Edit Access" tabs, BE-only writes). PD Cycle mirrors the PM pattern: `ensureDmtPd()` lazily creates `dmt_pd_editor` + `dmt_pd_log`; `dmtPdLog()` never throws; the `pd-jobs` / `pd-job-comments` resources use `editGuard` + `afterWrite` hooks, the stage/spawn routes use `dmtPdGuard`, and `pd-stage-history` is `readOnly` (only the stage route writes it). Viewer endpoints: `GET /api/dmt/pd-editors[/me]`, `GET /api/dmt/pd-audit?from&to` (leadership+). Page (`DmtPdCycle.jsx`): fixed 136px cards, 4 per kanban column with a per-column pager, paginated list view, drawer split into Details/Comments/History tabs. **Categories (#111):** `dmt_pd_category` + `dmt_pd_jobs.category_id`, created/seeded lazily by `ensureDmtPd()` (also called at boot); `GET/POST/PATCH /api/dmt/pd-categories` (GET jh_lead+, writes BE only, off not delete); jobs validated against ACTIVE categories (`dmtValidatePdJob`); audit CHECK widened with `category_*` events. **Attendance sheet + co-facilitator (#126):** `dmt_tier.co_facilitator_emp_id` (lazy `ensureDmtCoFacilitator()`, also at boot; counted by `dmtMyGroupIds` / `dmtVisibleTierIdsFor` / `dmtMeetingAccess.isManager`); `dmt_meeting_invitees.source` (`group`|`extra`) + `added_by` (`ensureDmtAttendeeSheet()`); `dmtSyncGroupAttendees()` (called on meeting INSERT and by `POST /api/dmt/meetings/:id/sync-attendees`), rules `dmtInviteeRule` / `dmtAttendanceRule`. Verified with a 31-check self-cleaning API run. **Meeting write rules (#124):** generic `rule(action, {row, body, user})` hook on `DMT_RESOURCES` (INSERT/UPDATE/DELETE, may stamp/clean `body`); `dmtMeetingAccess()` gives `{isManager, isParticipant, open}`; anyone part of a meeting adds notes/points/decisions, only the author edits (`created_by`, `dmt_meetings.summary_by`, both stamped server-side); tasks unrestricted. Verified with a 29-check self-cleaning API run. **Decision visibility (#121):** `meeting-decisions` has `rowFilter: dmtDecisionRowFilter` (generic hook in the `DMT_RESOURCES` LIST + GET-one handlers, returns `{clause, params}` to AND on): BE tier sees all; everyone else only decisions of meetings whose `tier_id` is an active group they're a member/Lead of, or where they're facilitator/creator. Supersedes the old client-side "My Tiers / All I can see" switch on the Decision Log. **Meeting audit trail (#120):** `dmt_meeting_log` (lazy `ensureDmtMeetingLog()`), written by `dmtMeetingLog()` (never throws) from the `afterWrite` hooks `dmtMeetingAfter` / `dmtInviteeAfter` / `dmtAttendanceAfter` / `dmtPointAfter` / `dmtDecisionAfter` on `meetings`, `meeting-invitees`, `meeting-attendance`, `meeting-discussion-points`, `meeting-decisions`; `GET /api/dmt/meeting-audit` (leadership+); Organisation tab `DmtMeetingAudit.jsx`, plus an "Audit trail" button in `DmtMeetingWorkspace.jsx`. Verified with a 19-check self-cleaning API run on a test copy. **Columns + demo data (#116–117):** the PD board has a per-person "Columns" menu (`dmt_pdcycle_cols_<emp_id>` via `safeStorage`, same as the Task Board) and `colPageSize(shownColumns)` = 4/5/6 cards per column page; `backend/tools/seed_demo_pd_cycle.mjs` seeds/cleans "[DEMO] " jobs through the real API. **Stages (#112–115):** no longer a fixed enum — `dmt_pd_stage_def` (key, label, kind `active`/`closing`, position, `requires_note`, `early_exit`, tone, `is_removed`) is managed at Organisation → PD Cycle Stages (`GET/POST/PATCH/DELETE /api/dmt/pd-stages`, GET jh_lead+, writes BE only); the four stage columns are plain text (converted in `ensureDmtPd()`). Server `pdStageOptions(cfg,key)` is the single source for allowed moves (next in-progress stage + closing stages that are `early_exit`, or all closing from the LAST in-progress stage; `back_to` = previous in-progress stage, reason required); the client only reads `forward`/`back_to` off `GET /pd-stages` via `usePdStages()` (`lib/usePdStages.js`, `lib/pdCycle.js` `buildStages`). The generic `pd-jobs` create/edit forces/ignores `stage` (`dmtValidatePdJob`). Kanban = one column per in-progress stage + one "closed" column. Verified with a self-cleaning API run on a test copy (`PORT=3111`, 40/42 — the 2 "failures" were because the owner had legitimately granted 222222 PD edit access, not a bug); the first backend restart runs the enum→text migration on the live DB. Earlier: verified with a 26-check self-cleaning API run on a test copy (`PORT=3111`); the owner must restart their backend for the new endpoints, and the layout is still the owner's visual gate.
+
+## DMT: PD Cycle + Meetings rework — index, migrations, how it was verified (Sept 2026)
+
+Per-feature detail is in the "DMT: PD Cycle access…" section above and `DMT_DECISIONS.md` #107–129. Index:
+- **PD Cycle** (#107–119, 128): edit access list (BE Admin always edits), audit trail, categories, BE-managed stages
+  (`dmt_pd_stage_def`), move back with a reason, respawn popup / duplicate warning / earlier history, Analytics side panel
+  (target-date based), per-person Columns menu, fixed-size non-overlapping cards, bold form labels. Files:
+  `pages/DmtPdCycle.jsx`, `DmtPdEditAccess.jsx`, `DmtPdStages.jsx`, `DmtPdAudit.jsx`, `DmtPdAnalyticsSheet.jsx`,
+  `lib/pdCycle.js`, `usePdStages.js`, `pdAnalytics.js`.
+- **Meetings** (#120–126): Meeting Audit Trail (`dmt_meeting_log`, cascading filters, per-meeting button), Decision Log
+  visibility (`rowFilter`), meeting write rules (`rule` hook; author-only edits), Groups filter (`components/GroupFilter.jsx`),
+  group Co-facilitator, attendance sheet = group people + per-meeting extras, self-marking, Edit-lock (page only).
+- **Shell** (#127): `components/layout/ModuleSwitch.jsx` (Lumos ⇄ CloseLoop), CloseLoop Logout.
+- **One-time schema changes made lazily at first backend start after deploy (no manual SQL; all additive except the enum
+  conversion):** `dmt_pd_editor`, `dmt_pd_log`, `dmt_pd_category`, `dmt_pd_stage_def`, `dmt_pd_jobs.category_id`; the four PD stage
+  columns converted from the `dmt_pd_stage` enum to text (values kept); `dmt_meeting_log` (+ `tier_id`); `dmt_meetings.summary_by`;
+  `dmt_tier.co_facilitator_emp_id`; `dmt_meeting_invitees.source/added_by`. **The owner must restart the backend** for any of it
+  to exist. Until then, respawning fails against the converted stage columns on an OLD running backend (its INSERT has no stage).
+- **New generic `DMT_RESOURCES` options:** `afterWrite(action, before, after, user)` (audit hooks), `rowFilter(user, startIdx)`
+  (who may SEE a row), `rule(action, {row, body, user})` (who may WRITE, can stamp/clean `body`), plus existing `editGuard`, `readOnly`.
+- **Dry-run recipe that worked** (use it again): run a test copy `PORT=3111 node server.js`; the browser-pane preview tool reads the
+  PARENT `C:\…\opl-done-superapp\.claude\launch.json`, so add a temporary config there (`npx vite --config vite.dry.config.js`,
+  cwd `opl-superapp-done/frontend`, port 3002) with a temporary `frontend/vite.dry.config.js` that proxies `/api` to 3111; seed
+  `localStorage.tpm_session` (flat shape, `role: 'be_lead'`) after loading `/login`; then delete both temp files and restore
+  launch.json. Result of the last run: 85/86 API checks (the 1 was a wrong expectation), UI smoke clean after fixing a nested
+  `<button>` in the Decision Log. Not exercised: a non-BE leadership viewer of the Meeting Audit Trail (none exists), non-English
+  rendering, phone widths.
+- **Demo data scripts (self-cleaning):** `backend/tools/seed_demo_pd_cycle.mjs`, `seed_demo_meetings.mjs` (`… clean`). The meeting demo
+  set is currently still in the database (titles start `[DEMO] `); it affects Compliance/Analytics attendance figures until cleaned.
+- **Known gaps:** attendance Edit-lock and "who may add outside people" are UI + server for marking/adding, but the Edit-lock itself is
+  page-only; a wrong author-owned note/decision can be fixed by nobody but its author (no BE override, by request); the Co-facilitator
+  is one per group; template invitees are no longer copied onto meetings.
+
 ## Carried tech debt (known, not yet fixed — don't rediscover, don't assume fixed)
 
 - **No test runner, no test files.** Every `*.test.js/jsx` was deleted this session (they had
   no runner and many imported since-deleted modules). `npm run build` is the only gate. If tests
   are ever wanted again it's a fresh Vitest setup (`environment: 'jsdom'` + a `test` script).
 - ~~**Mobile compatibility is partial.**~~ **Resolved** — see "Screen flexibility" below.
+- **Machine endpoints have no auth.** `GET/POST/PUT/PATCH /api/machines` check neither login nor role
+  (anyone who can reach the server can create/edit/deactivate machines); the route guard on the
+  Machines page (`module_lead`) is client-side only, and `Machines.jsx` has an `isAdmin = role ===
+  'admin'` check using a role that isn't in the real roles table. `POST /api/machines` writes a fixed
+  placeholder `factory_id` (`00000000-…-0001`); `machine.factory_id` is `uuid` while `factory.id` is
+  `text`, so machines can't be scoped to a plant, and `GET /api/machines` isn't plant-scoped. The
+  backend also listens on `0.0.0.0`. A follow-up task was suggested; nothing done yet. (The backend's
+  in-memory `mockDb` still contains a sample machine — only used if there's no DB.)
 - **`approval_routing.jh_group_id` is `uuid` while `jh_group.id` / `jh_groups_list.jh_group_id`
   are `text`** — column-to-column joins need `::text` on both sides (param comparison is fine).
 

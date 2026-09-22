@@ -25,6 +25,10 @@ import { formatIndianNumber } from '../lib/dmtFormat';
 import { todayStr, fmtLong, parseLocal } from '../lib/dmtDates';
 import { toIsoDate, daysBetween } from '../lib/pmSchedule';
 import { MyDashboardSection } from '../components/MyDashboardSection';
+import { Layers } from 'lucide-react';
+import { useMyTierKpis, useDmtTiers } from '../lib/useDmtTiers';
+import { tierLabel } from '../lib/taskExtras';
+import { useWidgetsPosition } from '../lib/useDmtWidgets';
 
 // Tinted card background/text per RAG status — undefined (no thresholds set) falls back
 // to a plain white card via the `|| '...'` at each call site.
@@ -38,6 +42,46 @@ const RAG_TEXT = {
     amber: 'text-amber-700',
     green: 'text-emerald-700',
 };
+
+// Combined, deduplicated KPI list from every active tier (T4/T3/T2) the caller belongs to —
+// as a member or as its Lead. Hidden entirely when they're in no tier at all, so this card
+// never shows for the majority of people who aren't part of any tier.
+function MyTierKpisCard({ entryByKpi }) {
+    const { data: kpis = [], isLoading } = useMyTierKpis();
+    if (!isLoading && kpis.length === 0) return null;
+    return (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+            <div className="mb-3 flex items-center gap-2 text-slate-700">
+                <Layers size={16} />
+                <h2 className="text-sm font-semibold">My Tier KPIs</h2>
+            </div>
+            {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+            ) : (
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+                    {kpis.map((k) => {
+                        const e = entryByKpi[k.kpi_id];
+                        const rag = e?.computed_status
+                            || (e?.actual_value != null ? computeRagFromValue(e.actual_value, k) : null);
+                        return (
+                            <div key={k.kpi_id} className={cn('rounded-lg border p-2.5 shadow-xs', RAG_CARD[rag] || 'border-slate-200 bg-white')}>
+                                <p className="truncate text-xs font-bold text-slate-900" title={k.name}>{k.name}</p>
+                                {rag && <Badge className={cn('mt-1 text-[9px] font-bold', RAG_BADGE[rag])}>{rag.toUpperCase()}</Badge>}
+                                <p className={cn('mt-1 text-lg font-bold', RAG_TEXT[rag] || 'text-slate-900')}>
+                                    {e?.actual_value != null ? formatIndianNumber(e.actual_value) : '—'}
+                                    {k.unit && <span className="ml-1 text-xs font-medium text-slate-400">{k.unit}</span>}
+                                </p>
+                                <p className="mt-1 truncate text-[10px] text-slate-400" title={k.via_tiers?.join(', ')}>
+                                    via {k.via_tiers?.join(', ')}
+                                </p>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+}
 
 function Stat({ icon: Icon, label, value, hint, onClick }) {
     return (
@@ -87,7 +131,11 @@ export function DmtDashboard() {
         onError: (e) => toast.error(e.message),
     });
     const [taskFor, setTaskFor] = useState(null);
-    const [tf, setTf] = useState({ title: '', owner_id: '', priority: 'high', due_date: '' });
+    const [tf, setTf] = useState({ title: '', owner_id: '', priority: 'high', due_date: '', tier_id: '' });
+    const [widgetsPosition, setWidgetsPosition] = useWidgetsPosition();
+    const myTiers = useDmtTiers();
+    const myKpiRows = useMyTierKpis();
+    const invitees = useQuery({ queryKey: ['dmt', 'dash-invitees'], queryFn: () => dmtApi.list('meeting-invitees') });
 
     const allKpis = useQuery({
         queryKey: ['dmt', 'dash-kpis-all'],
@@ -137,25 +185,39 @@ export function DmtDashboard() {
         return m;
     }, [mtdEntries.data]);
 
-    const openTasks = (tasks.data || []).filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
+    // Personal numbers: tasks I own, red KPIs of the groups I am in, meetings I take part in.
+    // (PM This Month stays plant-wide.)
+    const meEmp = user?.emp_id;
+    const myKpiIds = useMemo(() => new Set((myKpiRows.data || []).map((k) => k.kpi_id)), [myKpiRows.data]);
+    const myTierIds = useMemo(
+        () => new Set((myTiers.data || []).filter((t) => t.is_member || t.lead_emp_id === meEmp || t.co_facilitator_emp_id === meEmp).map((t) => t.id)),
+        [myTiers.data, meEmp],
+    );
+    const myInvitedMeetingIds = useMemo(
+        () => new Set((invitees.data || []).filter((i) => i.user_id === meEmp).map((i) => i.meeting_id)),
+        [invitees.data, meEmp],
+    );
+    const openTasks = (tasks.data || []).filter((t) => t.owner_id === meEmp && t.status !== 'completed' && t.status !== 'cancelled');
     const overdueTasks = openTasks.filter((t) => t.due_date && t.due_date.slice(0, 10) < todayStr());
-    const redToday = (dayEntries.data || []).filter((e) => e.computed_status === 'red').length;
+    const redToday = (dayEntries.data || []).filter((e) => e.computed_status === 'red' && myKpiIds.has(e.kpi_id)).length;
     const linkedEntryIds = new Set((tasks.data || []).map((t) => t.origin_kpi_entry_id).filter(Boolean));
 
     const createTask = useMutation({
         mutationFn: async () => {
             const factories = await dmtApi.list('factory');
             return dmtApi.create('tasks', {
-                title: tf.title.trim(), department_id: taskFor.kpi.department_id, owner_id: tf.owner_id,
+                title: tf.title.trim(), owner_id: tf.owner_id,
                 assigned_by: user.emp_id, created_by: user.emp_id, priority: tf.priority, due_date: tf.due_date,
                 origin_type: 'kpi_red', origin_kpi_entry_id: taskFor.entry?.id || null,
+                tier_id: tf.tier_id || null,
             });
         },
         onSuccess: () => { toast.success('Task created'); qc.invalidateQueries({ queryKey: ['dmt', 'dash-tasks'] }); qc.invalidateQueries({ queryKey: ['dmt', 'tasks'] }); setTaskFor(null); },
         onError: (e) => toast.error(e.message),
     });
     const nextMeeting = (meetings.data || [])
-        .filter((m) => (m.scheduled_date || '') >= todayStr() && ['scheduled', 'in_progress'].includes(m.status))
+        .filter((m) => (m.scheduled_date || '') >= todayStr() && ['scheduled', 'in_progress'].includes(m.status)
+            && (m.facilitator_id === meEmp || m.created_by === meEmp || myInvitedMeetingIds.has(m.id) || (m.tier_id && myTierIds.has(m.tier_id))))
         .sort((a, b) => (a.scheduled_date + a.scheduled_start_time).localeCompare(b.scheduled_date + b.scheduled_start_time))[0];
 
     const pmSummary = useMemo(() => {
@@ -192,7 +254,7 @@ export function DmtDashboard() {
                     <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-white"><LayoutDashboard size={22} /></div>
                     <div>
                         <h1 className="text-xl font-bold text-slate-900">Daily Management</h1>
-                        <p className="text-sm text-slate-500">{user ? `${user.name} · ${user.tier?.replace('_', ' ')}` : ''}</p>
+                        <p className="text-sm text-slate-500">{user?.name ?? ''}</p>
                     </div>
                 </div>
                 <div>
@@ -216,12 +278,18 @@ export function DmtDashboard() {
                 <Stat icon={CalendarDays} label="Next Meeting" value={nextMeeting ? nextMeeting.scheduled_start_time?.slice(0, 5) : '—'} hint={nextMeeting ? `${nextMeeting.title} · ${fmtLong(nextMeeting.scheduled_date)}` : 'none scheduled'} onClick={() => navigate('/dmt/meetings')} />
             </div>
 
-            <MyDashboardSection
-                allKpis={allKpis.data || []}
-                allTasks={tasks.data || []}
-                entryByKpi={entryByKpi}
-                departments={departments.data || []}
-            />
+            <MyTierKpisCard entryByKpi={entryByKpi} />
+
+            {widgetsPosition === 'above' && (
+                <MyDashboardSection
+                    allKpis={allKpis.data || []}
+                    allTasks={tasks.data || []}
+                    entryByKpi={entryByKpi}
+                    departments={departments.data || []}
+                    position={widgetsPosition}
+                    setPosition={setWidgetsPosition}
+                />
+            )}
 
             {grouped.length > 0 && (
                 <div className="flex items-center justify-between">
@@ -308,7 +376,7 @@ export function DmtDashboard() {
                                                         <div className="mt-1.5">
                                                             {e && linkedEntryIds.has(e.id)
                                                                 ? <span className="text-2xs font-semibold text-emerald-600">task ✓</span>
-                                                                : <Button size="sm" variant="outline" className="h-6 w-full text-2xs" onClick={() => { setTaskFor({ kpi: k, entry: e }); setTf({ title: `Action for Red KPI: ${k.name}`, owner_id: '', priority: 'high', due_date: '' }); }}>Create Task</Button>}
+                                                                : <Button size="sm" variant="outline" className="h-6 w-full text-2xs" onClick={() => { setTaskFor({ kpi: k, entry: e }); setTf({ title: `Action for Red KPI: ${k.name}`, owner_id: '', priority: 'high', due_date: '', tier_id: '' }); }}>Create Task</Button>}
                                                         </div>
                                                     )}
                                                 </div>
@@ -349,6 +417,17 @@ export function DmtDashboard() {
                 })
             )}
 
+            {widgetsPosition === 'below' && (
+                <MyDashboardSection
+                    allKpis={allKpis.data || []}
+                    allTasks={tasks.data || []}
+                    entryByKpi={entryByKpi}
+                    departments={departments.data || []}
+                    position={widgetsPosition}
+                    setPosition={setWidgetsPosition}
+                />
+            )}
+
             <Dialog open={!!taskFor} onOpenChange={(v) => !v && setTaskFor(null)}>
                 <DialogContent className="max-w-md">
                     <DialogHeader><DialogTitle>Create Task from Red KPI</DialogTitle></DialogHeader>
@@ -366,6 +445,13 @@ export function DmtDashboard() {
                             </Select>
                             <input type="date" min={todayStr()} value={tf.due_date} onChange={(e) => setTf({ ...tf, due_date: e.target.value })} className="h-11 rounded-md border border-slate-200 px-3 text-sm" />
                         </div>
+                        <Select value={tf.tier_id || undefined} onValueChange={(v) => setTf({ ...tf, tier_id: v })}>
+                            <SelectTrigger className="h-11"><SelectValue placeholder="Tier (who sees this task)" /></SelectTrigger>
+                            <SelectContent>
+                                {(myTiers.data || []).map((t) => <SelectItem key={t.id} value={t.id}>{tierLabel(t)}</SelectItem>)}
+                            </SelectContent>
+                        </Select>
+                        <p className="text-xs text-slate-400">Leave blank to make this task visible to everyone.</p>
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setTaskFor(null)}>Cancel</Button>

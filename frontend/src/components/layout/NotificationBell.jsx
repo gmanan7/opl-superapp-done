@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, BookOpen, Lightbulb, AlertTriangle, ClipboardCheck, CheckCircle2, XCircle, Clock, Info } from 'lucide-react';
+import { Bell, BookOpen, Lightbulb, AlertTriangle, ClipboardCheck, ListChecks, CheckCircle2, XCircle, Clock, Info } from 'lucide-react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { useNotifications, useMarkNotificationRead, useDismissNotification } from '../../hooks/useNotifications';
 
@@ -22,6 +22,7 @@ const TABS = [
     { key: 'kaizen', label: 'Kaizen', route: '/kaizen', Icon: Lightbulb },
     { key: 'abnormality', label: 'Abnormalities', route: '/abnormalities', Icon: AlertTriangle },
     { key: 'audit', label: 'Audits', route: '/audits', Icon: ClipboardCheck },
+    { key: 'dmt', label: 'Tasks', route: '/dmt/tasks', Icon: ListChecks },
 ];
 
 const moduleOf = (n) => n.module || 'opl';
@@ -33,7 +34,7 @@ const isActionable = (n) => typeof n.kind === 'string' && n.kind.endsWith('_pend
 // Visual accent by outcome.
 const toneOf = (n) => {
     const k = n.kind || '';
-    if (k.endsWith('_pending') || k === 'training_reminder') return 'amber';
+    if (k.endsWith('_pending') || k === 'training_reminder' || k === 'dmt_task_escalated') return 'amber';
     if (k.includes('approved') || k.includes('closed')) return 'emerald';
     if (k.includes('rejected') || k.includes('deletion')) return 'rose';
     return 'blue';
@@ -57,13 +58,13 @@ export function NotificationBell({ variant = 'sidebar' }) {
     const unread = data?.unread_count || 0;
 
     const byTab = useMemo(() => {
-        const map = { opl: [], kaizen: [], abnormality: [], audit: [] };
+        const map = { opl: [], kaizen: [], abnormality: [], audit: [], dmt: [] };
         notifications.forEach((n) => (map[moduleOf(n)] || map.opl).push(n));
         return map;
     }, [notifications]);
 
     const unreadByTab = useMemo(() => {
-        const map = { opl: 0, kaizen: 0, abnormality: 0, audit: 0 };
+        const map = { opl: 0, kaizen: 0, abnormality: 0, audit: 0, dmt: 0 };
         notifications.forEach((n) => { if (!n.is_read) map[moduleOf(n)] = (map[moduleOf(n)] || 0) + 1; });
         return map;
     }, [notifications]);
@@ -135,7 +136,7 @@ export function NotificationBell({ variant = 'sidebar' }) {
                     </SheetHeader>
 
                     {/* module tabs */}
-                    <div className="mt-2 grid grid-cols-4 gap-1 rounded-xl bg-surface-sunken p-1">
+                    <div className="mt-2 grid grid-cols-5 gap-1 rounded-xl bg-surface-sunken p-1">
                         {TABS.map(({ key, label, Icon }) => (
                             <button
                                 key={key}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Save, AlertTriangle, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Save, AlertTriangle, Plus, Trash2, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -12,43 +12,42 @@ import {
 import { dmtApi } from '../lib/dmtApi';
 import { useDmtMe } from '../lib/useDmt';
 import { useDmtDepartments } from '../lib/useDmtKpi';
+import { useMyTierKpis } from '../lib/useDmtTiers';
 import { computeRag, RAG_CLASSES } from '../lib/dmtRag';
 import { formatIndianNumber } from '../lib/dmtFormat';
 import { todayStr, diffDays, fmtLong } from '../lib/dmtDates';
 
-function useEntryDepartments() {
-    const { user, tierAtLeast } = useDmtMe();
-    const all = useDmtDepartments();
-    const mine = useQuery({
-        queryKey: ['dmt', 'my-departments', user?.emp_id],
-        queryFn: () => dmtApi.myDepartments(),
-        enabled: !!user && !tierAtLeast('leadership'),
-    });
-    if (tierAtLeast('leadership')) return all;
-    return mine;
-}
-
-function NumericSection({ departmentId, reportingDate }) {
+// A KPI belongs to exactly one group; only that group's members/Lead can enter its values, so the
+// entry page is simply "the KPIs of the groups I'm in" (server enforces the same rule on save).
+function NumericSection({ myKpis, reportingDate }) {
     const qc = useQueryClient();
     const late = diffDays(todayStr(), reportingDate) >= 2;
 
-    const kpis = useQuery({
-        queryKey: ['dmt', 'kpis-for-entry', departmentId],
-        queryFn: async () => {
-            const rows = await dmtApi.list('kpi-master', { department_id: departmentId, is_active: 'true' });
-            return rows.filter((k) => k.is_active && (k.kpi_type === 'numeric' || k.kpi_type === 'descriptive'));
-        },
-    });
+    const kpiList = useMemo(
+        () => myKpis.filter((k) => k.is_active && (k.kpi_type === 'numeric' || k.kpi_type === 'descriptive')),
+        [myKpis],
+    );
+    const kpis = { data: kpiList, isLoading: false };
 
     const existing = useQuery({
-        queryKey: ['dmt', 'kpi-entries', departmentId, reportingDate],
+        queryKey: ['dmt', 'kpi-entries', 'mine', reportingDate],
         queryFn: () => dmtApi.list('kpi-entries', { reporting_date: reportingDate }),
         enabled: !!kpis.data?.length,
     });
 
+    // A KPI already holding a value for this day is "submitted": its row is locked until Edit is
+    // pressed. (Older Save-All clicks left blank rows — those don't count as submitted.)
+    const hasValue = (e) => !!e && (e.actual_value !== null && e.actual_value !== undefined || !!(e.text_value || '').trim());
+    const submittedBy = useMemo(
+        () => Object.fromEntries((existing.data || []).filter(hasValue).map((e) => [e.kpi_id, e])),
+        [existing.data],
+    );
+    const [editing, setEditing] = useState(new Set());
+
     const [entries, setEntries] = useState({});
     useEffect(() => {
         if (!kpis.data) return;
+        setEditing(new Set()); // fresh data (date change / after a save) -> everything submitted is locked again
         const byKpi = Object.fromEntries((existing.data || []).map((e) => [e.kpi_id, e]));
         const next = {};
         kpis.data.forEach((k) => {
@@ -63,12 +62,25 @@ function NumericSection({ departmentId, reportingDate }) {
     }, [kpis.data, existing.data]);
 
     const set = (id, field, value) => setEntries((p) => ({ ...p, [id]: { ...p[id], [field]: value } }));
+    const isLocked = (k) => !!submittedBy[k.id] && !editing.has(k.id);
+    const startEdit = (id) => setEditing((p) => new Set(p).add(id));
+    const cancelEdit = (id) => {
+        setEditing((p) => { const n = new Set(p); n.delete(id); return n; });
+        const e = submittedBy[id];
+        setEntries((p) => ({ ...p, [id]: { actual_value: e?.actual_value?.toString() ?? '', text_value: e?.text_value ?? '', remarks: e?.remarks ?? '' } }));
+    };
+    // Only rows the person can still change AND has filled in are sent — locked rows and blanks are skipped.
+    const filled = (k) => {
+        const e = entries[k.id] || {};
+        return e.actual_value !== '' && e.actual_value !== undefined ? true : !!(e.text_value || '').trim();
+    };
+    const toSave = kpiList.filter((k) => !isLocked(k) && filled(k));
 
     const save = useMutation({
         mutationFn: () => {
-            const rows = (kpis.data || []).map((k) => {
+            const rows = toSave.map((k) => {
                 const e = entries[k.id] || {};
-                const actual = e.actual_value ? parseFloat(e.actual_value) : null;
+                const actual = e.actual_value !== '' && e.actual_value !== undefined ? parseFloat(e.actual_value) : null;
                 return {
                     kpi_id: k.id,
                     reporting_date: reportingDate,
@@ -91,7 +103,7 @@ function NumericSection({ departmentId, reportingDate }) {
     });
 
     if (kpis.isLoading) return <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>;
-    if (!kpis.data?.length) return <p className="py-4 text-sm text-slate-500">No numeric / descriptive KPIs for this department.</p>;
+    if (!kpis.data?.length) return null;
 
     return (
         <div className="space-y-4">
@@ -110,11 +122,13 @@ function NumericSection({ departmentId, reportingDate }) {
                             <th className="w-40 p-3 font-medium">Actual / Value</th>
                             <th className="w-20 p-3 text-center font-medium">Status</th>
                             <th className="w-48 p-3 font-medium">Remarks</th>
+                            <th className="w-24 p-3" />
                         </tr>
                     </thead>
                     <tbody>
                         {kpis.data.map((k) => {
                             const e = entries[k.id] || {};
+                            const locked = isLocked(k);
                             const isNumeric = k.kpi_type === 'numeric';
                             const rag = isNumeric
                                 ? computeRag(e.actual_value, k.green_threshold, k.amber_threshold, k.direction, k.target_value)
@@ -127,7 +141,9 @@ function NumericSection({ departmentId, reportingDate }) {
                                     </td>
                                     <td className="p-3 text-sm text-slate-500">{isNumeric ? formatIndianNumber(k.target_value) : '—'}</td>
                                     <td className="p-3">
-                                        {isNumeric ? (
+                                        {locked ? (
+                                            <p className="text-sm font-semibold text-slate-900">{isNumeric ? formatIndianNumber(e.actual_value) : (e.text_value || '—')}</p>
+                                        ) : isNumeric ? (
                                             <Input type="number" step="any" value={e.actual_value ?? ''} onChange={(ev) => set(k.id, 'actual_value', ev.target.value)} className="h-9" />
                                         ) : (
                                             <Textarea value={e.text_value ?? ''} onChange={(ev) => set(k.id, 'text_value', ev.target.value)} rows={1} className="min-h-[2.25rem] resize-none" />
@@ -137,7 +153,20 @@ function NumericSection({ departmentId, reportingDate }) {
                                         {rag ? <Badge className={`text-xs ${RAG_CLASSES[rag]}`}>{rag.toUpperCase()}</Badge> : <span className="text-xs text-slate-400">—</span>}
                                     </td>
                                     <td className="p-3">
-                                        <Input value={e.remarks ?? ''} onChange={(ev) => set(k.id, 'remarks', ev.target.value)} className="h-9 text-sm" placeholder="Remarks" />
+                                        {locked ? (
+                                            <p className="text-sm text-slate-500">{e.remarks || '—'}</p>
+                                        ) : (
+                                            <Input value={e.remarks ?? ''} onChange={(ev) => set(k.id, 'remarks', ev.target.value)} className="h-9 text-sm" placeholder="Remarks" />
+                                        )}
+                                    </td>
+                                    <td className="p-3 text-right">
+                                        {locked ? (
+                                            <Button variant="outline" size="sm" className="h-8 gap-1" onClick={() => startEdit(k.id)}>
+                                                <Pencil className="h-3.5 w-3.5" /> Edit
+                                            </Button>
+                                        ) : submittedBy[k.id] ? (
+                                            <Button variant="ghost" size="sm" className="h-8 text-slate-500" onClick={() => cancelEdit(k.id)}>Cancel</Button>
+                                        ) : null}
                                     </td>
                                 </tr>
                             );
@@ -146,8 +175,9 @@ function NumericSection({ departmentId, reportingDate }) {
                 </table>
             </div>
             <div className="flex justify-end">
-                <Button onClick={() => save.mutate()} disabled={save.isPending} className="gap-2">
-                    {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save All
+                <Button onClick={() => save.mutate()} disabled={save.isPending || toSave.length === 0} className="gap-2">
+                    {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    {toSave.length === 0 ? 'Nothing to save' : `Save ${toSave.length} KPI${toSave.length > 1 ? 's' : ''}`}
                 </Button>
             </div>
         </div>
@@ -227,47 +257,41 @@ function TrackerItem({ item, reportingDate, names, onStatus, onDelete }) {
     );
 }
 
-function TrackerSection({ departmentId, reportingDate }) {
+function TrackerSection({ myKpis, reportingDate }) {
     const qc = useQueryClient();
     const [hideDone, setHideDone] = useState(false);
     const [adding, setAdding] = useState(null); // kpiId
     const [title, setTitle] = useState('');
     const [desc, setDesc] = useState('');
 
-    const trackerKpis = useQuery({
-        queryKey: ['dmt', 'tracker-kpis', departmentId],
-        queryFn: async () => {
-            const rows = await dmtApi.list('kpi-master', { department_id: departmentId, is_active: 'true' });
-            return rows.filter((k) => k.is_active && k.kpi_type === 'project_tracker');
-        },
-    });
+    const trackerKpis = { data: myKpis.filter((k) => k.is_active && k.kpi_type === 'project_tracker') };
     const items = useQuery({
-        queryKey: ['dmt', 'tracker-items', departmentId],
-        queryFn: () => dmtApi.list('project-tracker-items', { department_id: departmentId }),
+        queryKey: ['dmt', 'tracker-items', 'mine'],
+        queryFn: () => dmtApi.list('project-tracker-items'),
         enabled: !!trackerKpis.data?.length,
     });
     const names = useQuery({ queryKey: ['dmt', 'worker-names'], queryFn: dmtApi.workerNames, staleTime: 6e5 });
     const nameMap = Object.fromEntries((names.data || []).map((w) => [w.id || w.emp_id, w.name]));
 
     const addItem = useMutation({
-        mutationFn: (kpiId) => dmtApi.create('project-tracker-items', {
-            kpi_id: kpiId, department_id: departmentId, title, description: desc || null,
+        mutationFn: (kpi) => dmtApi.create('project-tracker-items', {
+            kpi_id: kpi.id, department_id: kpi.department_id, title, description: desc || null,
         }),
         onSuccess: () => {
             toast.success('Item added');
-            qc.invalidateQueries({ queryKey: ['dmt', 'tracker-items', departmentId] });
+            qc.invalidateQueries({ queryKey: ['dmt', 'tracker-items'] });
             setAdding(null); setTitle(''); setDesc('');
         },
         onError: (e) => toast.error(e.message),
     });
     const setStatus = useMutation({
         mutationFn: ({ id, status }) => dmtApi.update('project-tracker-items', id, { status }),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['dmt', 'tracker-items', departmentId] }),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['dmt', 'tracker-items'] }),
         onError: (e) => toast.error(e.message),
     });
     const delItem = useMutation({
         mutationFn: (id) => dmtApi.remove('project-tracker-items', id),
-        onSuccess: () => { toast.success('Deleted'); qc.invalidateQueries({ queryKey: ['dmt', 'tracker-items', departmentId] }); },
+        onSuccess: () => { toast.success('Deleted'); qc.invalidateQueries({ queryKey: ['dmt', 'tracker-items'] }); },
         onError: (e) => toast.error(e.message),
     });
 
@@ -298,7 +322,7 @@ function TrackerSection({ departmentId, reportingDate }) {
                                 <Input placeholder="Title *" value={title} onChange={(e) => setTitle(e.target.value)} className="h-10" />
                                 <Input placeholder="Description (optional)" value={desc} onChange={(e) => setDesc(e.target.value)} className="h-10" />
                                 <div className="flex gap-2">
-                                    <Button size="sm" className="h-9" disabled={!title || addItem.isPending} onClick={() => addItem.mutate(kpi.id)}>Add</Button>
+                                    <Button size="sm" className="h-9" disabled={!title || addItem.isPending} onClick={() => addItem.mutate(kpi)}>Add</Button>
                                     <Button variant="outline" size="sm" className="h-9" onClick={() => setAdding(null)}>Cancel</Button>
                                 </div>
                             </div>
@@ -329,15 +353,14 @@ export function DmtKpiEntry() {
         d.setDate(d.getDate() - 1);
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     });
-    const [dept, setDept] = useState('');
-    const departments = useEntryDepartments();
-
-    useEffect(() => {
-        if (departments.data?.length === 1 && !dept) setDept(departments.data[0].id);
-    }, [departments.data, dept]);
+    const mine = useMyTierKpis();
+    // /my-tier-kpis names the KPI's id `kpi_id`; the entry tables key everything on `id`.
+    const myKpis = useMemo(() => (mine.data || []).map((k) => ({ ...k, id: k.kpi_id })), [mine.data]);
+    const departments = useDmtDepartments();
 
     // Dispatch dept ('DISP') may enter today; everyone else is capped at yesterday.
-    const isDispatch = (departments.data || []).some((d) => d.code === 'DISP');
+    const dispatchIds = new Set((departments.data || []).filter((d) => d.code === 'DISP').map((d) => d.id));
+    const isDispatch = myKpis.some((k) => dispatchIds.has(k.department_id));
     const maxDate = isDispatch ? todayStr() : (() => { const d = new Date(); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
     const isToday = date === todayStr();
 
@@ -357,23 +380,18 @@ export function DmtKpiEntry() {
                     />
                     <p className="text-xs text-slate-400">Defaults to yesterday. {isDispatch && isToday && "Dispatch: today's entry appears in tomorrow's review."}</p>
                 </div>
-                <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Department</label>
-                    <Select value={dept} onValueChange={setDept}>
-                        <SelectTrigger className="h-11 w-full sm:w-56"><SelectValue placeholder="Select department" /></SelectTrigger>
-                        <SelectContent>
-                            {(departments.data || []).map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
-                        </SelectContent>
-                    </Select>
-                </div>
             </div>
 
-            {!dept ? (
-                <p className="py-8 text-center text-sm text-slate-500">Select a department to begin entering KPIs.</p>
+            {mine.isLoading ? (
+                <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>
+            ) : myKpis.length === 0 ? (
+                <p className="py-8 text-center text-sm text-slate-500">
+                    No KPIs to enter. KPIs are assigned to groups by the BE Admin, and you can enter values only for KPIs of a group you belong to.
+                </p>
             ) : (
                 <>
-                    <NumericSection departmentId={dept} reportingDate={date} />
-                    <TrackerSection departmentId={dept} reportingDate={date} />
+                    <NumericSection myKpis={myKpis} reportingDate={date} />
+                    <TrackerSection myKpis={myKpis} reportingDate={date} />
                 </>
             )}
         </div>

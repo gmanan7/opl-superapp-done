@@ -39,7 +39,6 @@ export function Login() {
         {/* Header */}
         <div className="bg-stone-900 px-6 py-8 text-center">
           <h1 className="text-2xl font-bold text-white tracking-tight">{t('login.title')}</h1>
-          <p className="text-stone-400 text-sm mt-1">{t('login.subtitle')}</p>
         </div>
 
         {/* Form */}

@@ -1,29 +1,71 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, ChevronUp, ChevronDown, X, Loader2, LayoutGrid } from 'lucide-react';
+import { Plus, ChevronUp, ChevronDown, X, Loader2, LayoutGrid, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import {
-    Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrigger, SelectValue,
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../../components/ui/select';
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '../../components/ui/dialog';
 import { dmtApi } from '../lib/dmtApi';
 import { useDmtWidgets, WIDGET_TYPES, CHART_TYPES, isDeptWidget, isChartWidget, MAX_WIDGETS } from '../lib/useDmtWidgets';
+import { useDmtMe } from '../lib/useDmt';
 import { DashboardWidget } from './DashboardWidget';
 import { PERIODS, getDateRange } from '../lib/kpiChart';
 
 const ALL_DEPTS = '__all__';
 
+// Card-based KPI picker used by both the single-KPI (kpi_chart) and multi-KPI
+// (multi_kpi_chart) widget forms — selected ids highlight with a check mark instead
+// of relying on a native <select>/checkbox row, which reads better on mobile.
+function KpiCardGrid({ groups, selectedIds, onToggle, emptyLabel }) {
+    return (
+        <div className="mt-1 max-h-56 space-y-3 overflow-y-auto rounded-md border border-slate-200 p-2">
+            {groups.map(([deptName, deptKpis]) => (
+                <div key={deptName}>
+                    <p className="px-1 pb-1 text-2xs font-semibold uppercase tracking-wide text-slate-400">{deptName}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                        {deptKpis.map((k) => {
+                            const selected = selectedIds.includes(k.id);
+                            return (
+                                <button
+                                    key={k.id}
+                                    type="button"
+                                    onClick={() => onToggle(k.id)}
+                                    className={`relative rounded-lg border p-2 text-left transition-colors ${
+                                        selected
+                                            ? 'border-blue-500 bg-blue-50'
+                                            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                                    }`}
+                                >
+                                    {selected && (
+                                        <span className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-blue-500">
+                                            <Check className="h-2.5 w-2.5 text-white" strokeWidth={3} />
+                                        </span>
+                                    )}
+                                    <p className="pr-4 text-xs font-medium text-slate-700">{k.name}</p>
+                                    {k.unit && <p className="text-2xs text-slate-400">{k.unit}</p>}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            ))}
+            {groups.length === 0 && (
+                <p className="py-2 text-center text-xs text-slate-400">{emptyLabel}</p>
+            )}
+        </div>
+    );
+}
+
 function AddWidgetDialog({ open, onOpenChange, add, kpis, deptById, savedCharts, selectableDepartments, canPickAnyDept }) {
     const [type, setType] = useState('kpi_chart');
-    const [kpiId, setKpiId] = useState('');
     const [kpiIds, setKpiIds] = useState([]);
     const [chartType, setChartType] = useState('composed');
     const [chartName, setChartName] = useState('');
-    const [savedChartId, setSavedChartId] = useState('');
     const [deptId, setDeptId] = useState('');
     const [kpiDeptFilter, setKpiDeptFilter] = useState('all');
 
@@ -46,32 +88,46 @@ function AddWidgetDialog({ open, onOpenChange, add, kpis, deptById, savedCharts,
 
     const needsDept = isDeptWidget(type);
     const ready = {
-        kpi_chart: !!kpiId,
+        kpi_chart: kpiIds.length > 0,
         multi_kpi_chart: kpiIds.length > 0,
-        saved_chart: !!savedChartId,
+        task_count: true,
+        task_list: true,
     }[type] ?? !!deptId;
 
     const reset = (v) => {
-        setType(v); setKpiId(''); setKpiIds([]); setSavedChartId(''); setDeptId(''); setChartName(''); setKpiDeptFilter('all');
+        setType(v); setKpiIds([]); setDeptId(''); setChartName(''); setKpiDeptFilter('all');
     };
 
     const toggleKpi = (id) =>
         setKpiIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
     const buildConfig = () => {
-        if (type === 'kpi_chart') return { kpi_id: kpiId };
         if (type === 'multi_kpi_chart') {
             return { kpi_ids: kpiIds, chart_type: chartType, name: chartName.trim() || undefined };
         }
-        if (type === 'saved_chart') return { chart_id: savedChartId };
+        if (type === 'task_count' || type === 'task_list') return {};
         return { department_id: deptId === ALL_DEPTS ? null : deptId };
     };
 
-    const submit = () => {
-        add.mutate({ widget_type: type, config: buildConfig() }, {
-            onSuccess: () => { toast.success('Widget added'); onOpenChange(false); },
-            onError: (e) => toast.error(e.message),
-        });
+    // A KPI trend chart is single-KPI by design (one widget = one target line + MTD), but
+    // people can multi-select KPIs here to add several such widgets in one go instead of
+    // repeating the whole dialog per KPI. Sequential (not parallel) so each gets its own
+    // display_order rather than all landing on the same pre-add count.
+    const submit = async () => {
+        try {
+            if (type === 'kpi_chart') {
+                for (const id of kpiIds) {
+                    await add.mutateAsync({ widget_type: 'kpi_chart', config: { kpi_id: id } });
+                }
+                toast.success(kpiIds.length > 1 ? 'Widgets added' : 'Widget added');
+            } else {
+                await add.mutateAsync({ widget_type: type, config: buildConfig() });
+                toast.success('Widget added');
+            }
+            onOpenChange(false);
+        } catch (e) {
+            toast.error(e.message);
+        }
     };
 
     return (
@@ -131,20 +187,16 @@ function AddWidgetDialog({ open, onOpenChange, add, kpis, deptById, savedCharts,
 
                     {type === 'kpi_chart' && (
                         <div>
-                            <label className="text-xs font-medium text-slate-600">KPI</label>
-                            <Select value={kpiId} onValueChange={setKpiId}>
-                                <SelectTrigger className="mt-1 h-11"><SelectValue placeholder="Select a KPI" /></SelectTrigger>
-                                <SelectContent>
-                                    {visibleKpisByDept.map(([deptName, deptKpis]) => (
-                                        <SelectGroup key={deptName}>
-                                            <SelectLabel>{deptName}</SelectLabel>
-                                            {deptKpis.map((k) => (
-                                                <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>
-                                            ))}
-                                        </SelectGroup>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                            <label className="text-xs font-medium text-slate-600">
+                                KPIs {kpiIds.length > 0 && <span className="text-slate-400">· {kpiIds.length} selected</span>}
+                            </label>
+                            <p className="mt-0.5 text-xs text-slate-400">Each one becomes its own chart widget.</p>
+                            <KpiCardGrid
+                                groups={visibleKpisByDept}
+                                selectedIds={kpiIds}
+                                onToggle={toggleKpi}
+                                emptyLabel="No KPIs available."
+                            />
                         </div>
                     )}
 
@@ -166,24 +218,12 @@ function AddWidgetDialog({ open, onOpenChange, add, kpis, deptById, savedCharts,
                                 <label className="text-xs font-medium text-slate-600">
                                     KPIs {kpiIds.length > 0 && <span className="text-slate-400">· {kpiIds.length} selected</span>}
                                 </label>
-                                <div className="mt-1 max-h-48 space-y-1 overflow-y-auto rounded-md border border-slate-200 p-2">
-                                    {visibleKpisByDept.map(([deptName, deptKpis]) => (
-                                        <div key={deptName}>
-                                            <p className="px-1 pt-1 text-2xs font-semibold uppercase tracking-wide text-slate-400">{deptName}</p>
-                                            {deptKpis.map((k) => (
-                                                <label key={k.id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-slate-50">
-                                                    <input type="checkbox" checked={kpiIds.includes(k.id)} onChange={() => toggleKpi(k.id)} />
-                                                    <span className="text-xs text-slate-700">
-                                                        {k.name}{k.unit && <span className="text-slate-400"> ({k.unit})</span>}
-                                                    </span>
-                                                </label>
-                                            ))}
-                                        </div>
-                                    ))}
-                                    {(kpis.data || []).length === 0 && (
-                                        <p className="py-2 text-center text-xs text-slate-400">No KPIs available.</p>
-                                    )}
-                                </div>
+                                <KpiCardGrid
+                                    groups={visibleKpisByDept}
+                                    selectedIds={kpiIds}
+                                    onToggle={toggleKpi}
+                                    emptyLabel="No KPIs available."
+                                />
                             </div>
                             <Input placeholder="Chart title (optional)" value={chartName} onChange={(e) => setChartName(e.target.value)} className="h-11" />
                         </>
@@ -219,11 +259,12 @@ function AddWidgetDialog({ open, onOpenChange, add, kpis, deptById, savedCharts,
     );
 }
 
-export function MyDashboardSection({ allKpis, allTasks, entryByKpi, departments }) {
+export function MyDashboardSection({ allKpis, allTasks, entryByKpi, departments, position, setPosition }) {
     const {
         widgets, sorted, kpis, selectableDepartments, canPickAnyDept,
         savedCharts, savedChartKpis, add, remove, reorder,
     } = useDmtWidgets();
+    const { user: me } = useDmtMe();
     const [adding, setAdding] = useState(false);
     const [period, setPeriod] = useState('this_month');
     const [from, to] = useMemo(() => getDateRange(period), [period]);
@@ -286,6 +327,16 @@ export function MyDashboardSection({ allKpis, allTasks, entryByKpi, departments 
                         </div>
                     )}
                     {sorted.length > 0 && (
+                        <div className="flex gap-1" title="Where this section sits relative to the KPI Performance table below">
+                            <Button size="sm" variant={position === 'above' ? 'default' : 'outline'} className="h-8 text-xs" onClick={() => setPosition('above')}>
+                                Above KPIs
+                            </Button>
+                            <Button size="sm" variant={position === 'below' ? 'default' : 'outline'} className="h-8 text-xs" onClick={() => setPosition('below')}>
+                                Below KPIs
+                            </Button>
+                        </div>
+                    )}
+                    {sorted.length > 0 && (
                         <Button size="sm" variant="outline" className="gap-1.5" onClick={openAdd}>
                             <Plus className="h-3.5 w-3.5" /> Add widget
                         </Button>
@@ -319,6 +370,7 @@ export function MyDashboardSection({ allKpis, allTasks, entryByKpi, departments 
                                 chartEntries={chartEntries}
                                 savedChartById={savedChartById}
                                 savedChartLinks={savedChartKpis.data || []}
+                                myEmpId={me?.emp_id}
                             />
                         </div>
                     ))}

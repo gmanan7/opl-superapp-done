@@ -10,8 +10,12 @@ import {
 } from '../../components/ui/select';
 import { cn } from '../../lib/utils';
 import { dmtApi } from '../lib/dmtApi';
+import { useDmtMe } from '../lib/useDmt';
 import { useDmtWorkers } from '../lib/useDmtTasks';
 import { useDmtDepartments } from '../lib/useDmtKpi';
+import { useDmtTiers } from '../lib/useDmtTiers';
+import { GroupFilter } from '../components/GroupFilter';
+import { tierLabel } from '../lib/taskExtras';
 import { todayStr, fmtLong, fmtShort } from '../lib/dmtDates';
 
 const TASK_STATUS_CLS = {
@@ -36,24 +40,33 @@ const isTaskOverdue = (t) => t && !['completed', 'cancelled'].includes(t.status)
 
 export function DmtDecisionLog() {
     const navigate = useNavigate();
+    const { tierAtLeast } = useDmtMe();
+    const isBeLead = tierAtLeast('be_lead');
     const [range, setRange] = useState('30d');
     const [taskFilter, setTaskFilter] = useState('all');
     const [search, setSearch] = useState('');
+    const [groupIds, setGroupIds] = useState(() => new Set()); // pick meetings by group; empty = all you can see
     const [collapsed, setCollapsed] = useState({});
     const from = useMemo(() => rangeFrom(range), [range]);
 
+    // The server only sends decisions from meetings this person is part of — meetings of a group
+    // they are a member/Lead of, or ones they run or created. Only BE Admin gets every meeting's
+    // decisions. So no filtering by group is needed here; a decision whose meeting isn't in the
+    // (separately scoped) meetings list below is simply skipped.
     const decisions = useQuery({ queryKey: ['dmt', 'decisions-all'], queryFn: () => dmtApi.list('meeting-decisions') });
     const meetings = useQuery({ queryKey: ['dmt', 'decisions-meetings'], queryFn: () => dmtApi.list('meetings') });
     const tasks = useQuery({ queryKey: ['dmt', 'decisions-tasks'], queryFn: () => dmtApi.list('tasks') });
     const points = useQuery({ queryKey: ['dmt', 'decisions-points'], queryFn: () => dmtApi.list('meeting-discussion-points') });
     const workers = useDmtWorkers();
     const departments = useDmtDepartments();
+    const myTiers = useDmtTiers();
+
+    const tierById = Object.fromEntries((myTiers.data || []).map((t) => [t.id, t]));
 
     const meetingById = Object.fromEntries((meetings.data || []).map((m) => [m.id, m]));
     const taskById = Object.fromEntries((tasks.data || []).map((t) => [t.id, t]));
     const pointById = Object.fromEntries((points.data || []).map((p) => [p.id, p]));
     const nameById = Object.fromEntries((workers.data || []).map((w) => [w.id || w.emp_id, w.name]));
-    const deptById = Object.fromEntries((departments.data || []).map((d) => [d.id, d.name]));
 
     const rows = useMemo(() => (decisions.data || [])
         .map((d) => {
@@ -62,6 +75,7 @@ export function DmtDecisionLog() {
             return { ...d, meeting, task };
         })
         .filter((d) => d.meeting && d.meeting.scheduled_date >= from)
+        .filter((d) => groupIds.size === 0 || (d.meeting.tier_id && groupIds.has(d.meeting.tier_id)))
         .filter((d) => {
             if (taskFilter === 'has_task') return !!d.linked_task_id;
             if (taskFilter === 'no_task') return !d.linked_task_id;
@@ -71,7 +85,7 @@ export function DmtDecisionLog() {
         })
         .filter((d) => !search.trim() || d.decision_text.toLowerCase().includes(search.toLowerCase()))
         .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')),
-    [decisions.data, meetingById, taskById, from, taskFilter, search]);
+    [decisions.data, meetingById, taskById, from, groupIds, taskFilter, search]);
 
     const grouped = useMemo(() => {
         const map = new Map();
@@ -94,11 +108,18 @@ export function DmtDecisionLog() {
         <div className="mx-auto max-w-5xl space-y-4">
             <h1 className="text-xl font-bold text-slate-900">Decision Log</h1>
 
+            <p className="-mt-2 text-xs text-slate-500">
+                {isBeLead
+                    ? 'Showing the decisions of every meeting.'
+                    : 'Showing the decisions of meetings held by the groups you belong to, and meetings you run.'}
+            </p>
+
             <div className="flex flex-wrap items-center gap-2">
                 <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search decisions…" className="h-9 w-56 pl-8 text-sm" />
                 </div>
+                <GroupFilter selected={groupIds} onChange={setGroupIds} />
                 <Select value={range} onValueChange={setRange}>
                     <SelectTrigger className="h-9 w-32 text-sm"><SelectValue /></SelectTrigger>
                     <SelectContent>{RANGES.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
@@ -136,14 +157,16 @@ export function DmtDecisionLog() {
                     const isCollapsed = collapsed[meeting.id] ?? false;
                     return (
                         <div key={meeting.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                            <button type="button" className="flex w-full items-center justify-between px-4 py-2.5" onClick={() => setCollapsed({ ...collapsed, [meeting.id]: !isCollapsed })}>
-                                <div className="flex items-center gap-2 text-sm">
-                                    <ChevronDown className={cn('h-4 w-4 transition-transform', isCollapsed && '-rotate-90')} />
+                            {/* two sibling buttons (a button can't sit inside another button): collapse/expand, and open the meeting */}
+                            <div className="flex w-full items-center justify-between gap-2 px-4 py-2.5">
+                                <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm" onClick={() => setCollapsed({ ...collapsed, [meeting.id]: !isCollapsed })}>
+                                    <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform', isCollapsed && '-rotate-90')} />
                                     <span className="font-semibold">{meeting.title}</span>
+                                    {meeting.tier_id && <Badge variant="secondary" className="text-[10px]">{tierLabel(tierById[meeting.tier_id])}</Badge>}
                                     <span className="text-slate-400">{fmtShort(meeting.scheduled_date)} · {mDecisions.length} decision{mDecisions.length !== 1 ? 's' : ''}</span>
-                                </div>
-                                <button type="button" onClick={(e) => { e.stopPropagation(); navigate(`/dmt/meetings/${meeting.id}`); }} className="text-xs text-blue-600">Open</button>
-                            </button>
+                                </button>
+                                <button type="button" onClick={() => navigate(`/dmt/meetings/${meeting.id}`)} className="shrink-0 text-xs text-blue-600">Open Meeting</button>
+                            </div>
                             {!isCollapsed && (
                                 <div className="divide-y divide-slate-100 border-t border-slate-100">
                                     {mDecisions.map((d) => (
@@ -160,7 +183,6 @@ export function DmtDecisionLog() {
                                                     <span className="font-medium">#{d.task.task_number} {d.task.title}</span>
                                                     <span className="text-slate-400">
                                                         {nameById[d.task.owner_id] || d.task.owner_id}
-                                                        {deptById[d.task.department_id] ? ` · ${deptById[d.task.department_id]}` : ''}
                                                         {d.task.due_date ? ` · due ${fmtShort(d.task.due_date)}` : ''}
                                                     </span>
                                                     {isTaskOverdue(d.task) && <span className="font-medium text-rose-600">overdue</span>}

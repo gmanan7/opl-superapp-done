@@ -18,54 +18,10 @@ function getGreeting() {
         return 'Good evening';
     return 'Good night';
 }
-const ROLE_BADGE = {
-    operator: 'bg-cyan-100 text-cyan-700',
-    jh_lead: 'bg-purple-100 text-purple-700',
-    module_lead: 'bg-violet-100 text-violet-700',
-    admin_5s: 'bg-pink-100 text-pink-700',
-    area_champion_5s: 'bg-emerald-100 text-emerald-700',
-    auditor_pool: 'bg-amber-100 text-amber-700',
-    be_lead: 'bg-indigo-100 text-indigo-700',
-    it_lead: 'bg-sky-100 text-sky-700',
-    leadership: 'bg-rose-100 text-rose-700',
-    apprentice: 'bg-blue-100 text-blue-700',
-    on_roll: 'bg-teal-100 text-teal-700',
-    jh_leader: 'bg-purple-100 text-purple-700',
-    dmt_member: 'bg-amber-50 text-amber-600',
-    dmt_leader: 'bg-amber-100 text-amber-700',
-    pillar_champion: 'bg-orange-100 text-orange-700',
-    be_team: 'bg-indigo-100 text-indigo-700',
-    admin: 'bg-red-100 text-red-700',
-};
-const ROLE_LABEL = {
-    operator: 'Operator',
-    jh_lead: 'JH Lead',
-    module_lead: 'Module Lead',
-    admin_5s: '5s Admin',
-    area_champion_5s: '5s Area Champion',
-    auditor_pool: 'Auditor Pool',
-    be_lead: 'BE Lead',
-    it_lead: 'IT Lead',
-    leadership: 'Leadership',
-    apprentice: 'Apprentice',
-    on_roll: 'On Roll',
-    jh_leader: 'JH Leader',
-    dmt_member: 'DMT Member',
-    dmt_leader: 'DMT Leader',
-    pillar_champion: 'Pillar Champion',
-    be_team: 'BE Team',
-    admin: 'Admin',
-};
-function StatCard({ label, value, leftBorderColor, valueColor, }) {
-    return (<div className={`bg-white rounded-xl border border-stone-200 border-l-4 ${leftBorderColor} px-4 py-4 shadow-sm`}>
-      <p className={`text-2xl font-bold leading-none ${valueColor}`}>{value}</p>
-      <p className="text-xs text-stone-500 mt-1.5 leading-tight">{label}</p>
-    </div>);
-}
 export function Home() {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const { name, role } = useAuth();
+    const { name } = useAuth();
     const ctx = getSessionContext();
     const { data: jhGroupName } = useQuery({
         queryKey: ['jh-group-name', ctx?.jh_group_id],
@@ -87,27 +43,6 @@ export function Home() {
             return f?.name ?? null;
         },
     });
-    const { data: stats } = useQuery({
-        queryKey: ['home-stats', ctx?.factory_id, ctx?.jh_group_id],
-        staleTime: 1000 * 60 * 2,
-        queryFn: async () => {
-            const [abns, oplDetails, kaizenDetails] = await Promise.all([
-                api.getAbnormalityDetails(),
-                api.getOplDetails(),
-                api.getKaizenDetails(),
-            ]);
-            const now = new Date();
-            const isThisMonth = (ts) => {
-                const t = new Date(ts);
-                return t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth();
-            };
-            return {
-                openAbn: abns.filter((a) => isThisMonth(a.timestamp)).length,
-                oplCount: oplDetails.length,
-                kaizenCount: kaizenDetails.filter((k) => isThisMonth(k.timestamp)).length,
-            };
-        },
-    });
     async function handleLogout() {
         i18n.changeLanguage(safeStorage.getItem('tpm_ui_lang') ?? 'en');
         await logout();
@@ -120,9 +55,7 @@ export function Home() {
             <p className="text-sm text-stone-400">{getGreeting()},</p>
             <h1 className="text-2xl font-semibold text-stone-900 mt-0.5 leading-tight break-words">{name}</h1>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              {role && (<span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${ROLE_BADGE[role]}`}>
-                  {ROLE_LABEL[role]}
-                </span>)}
+              
               {jhGroupName && (<span className="text-xs text-stone-500 font-medium">{jhGroupName}</span>)}
               {factoryName && (<span className="text-xs text-stone-400">· {factoryName}</span>)}
             </div>
@@ -135,15 +68,6 @@ export function Home() {
       </div>
 
       <div className="px-5 py-6 space-y-7 max-w-5xl">
-        <section>
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-400 mb-3">Overview</h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <StatCard label="Abnormalities This Month" value={stats?.openAbn ?? '—'} leftBorderColor="border-l-red-500" valueColor="text-red-600"/>
-            <StatCard label="OPLs This Month" value={stats?.oplCount ?? '—'} leftBorderColor="border-l-blue-500" valueColor="text-blue-600"/>
-            <StatCard label="Kaizens This Month" value={stats?.kaizenCount ?? '—'} leftBorderColor="border-l-green-500" valueColor="text-green-600"/>
-          </div>
-        </section>
-
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-400 mb-3">
             Functions available

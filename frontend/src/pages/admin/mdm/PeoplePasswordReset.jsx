@@ -1,59 +1,39 @@
-import { useState, useEffect } from 'react';
-import { useTranslation } from 'react-i18next';
+import { useState } from 'react';
 import { toast } from 'sonner';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { useResetWorkerPassword } from '@/hooks/mdm';
-// Email-identity password reset, migrated from the retired /admin/users Leaders tab.
-// Admin-only at the UI here; the backend endpoint is admin-only + same-factory
-// regardless (the real gate). Min-8 + confirm is the client-side complexity check.
-export function PeoplePasswordReset({ worker, onOpenChange, }) {
-    const { t } = useTranslation();
-    const reset = useResetWorkerPassword();
-    const [pw, setPw] = useState('');
-    const [confirm, setConfirm] = useState('');
-    const [error, setError] = useState('');
-    useEffect(() => {
-        if (worker) {
-            setPw('');
-            setConfirm('');
-            setError('');
-        }
-    }, [worker]);
-    function submit() {
-        if (pw.length < 8) {
-            setError(t('people.passwordReset.lengthError'));
-            return;
-        }
-        if (pw !== confirm) {
-            setError(t('people.passwordReset.matchError'));
-            return;
-        }
-        if (!worker)
-            return;
-        reset.mutate({ workerId: worker.id, newPassword: pw }, {
-            onSuccess: () => { toast.success(t('people.passwordReset.success')); onOpenChange(false); },
-            onError: (e) => setError(e instanceof Error ? e.message : t('mdm.errors.unknown')),
-        });
-    }
-    return (<Dialog open={worker !== null} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle className="text-ink-strong">{t('people.passwordReset.title')}</DialogTitle>
-          <DialogDescription className="text-ink-muted">{worker?.name}</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3 py-2">
-          <Input type="password" autoComplete="new-password" placeholder={t('people.passwordReset.newPassword')} aria-label={t('people.passwordReset.newPassword')} value={pw} onChange={(e) => setPw(e.target.value)}/>
-          <Input type="password" autoComplete="new-password" placeholder={t('people.passwordReset.confirmPassword')} aria-label={t('people.passwordReset.confirmPassword')} value={confirm} onChange={(e) => setConfirm(e.target.value)}/>
-          {error && <p className="text-sm text-danger-fg">{error}</p>}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
-          <Button onClick={submit} disabled={reset.isPending}>
-            {reset.isPending ? t('common.submitting') : t('people.passwordReset.submit')}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>);
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { api } from '../../../lib/api';
+import { CredentialsDialog } from './PeopleOnboard';
+
+// Generates a new temporary password (shown once). The old password stops working immediately.
+export function PeoplePasswordReset({ person, onOpenChange }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  async function reset() {
+    setBusy(true);
+    try {
+      const res = await api.peopleResetPassword(person.emp_id);
+      setResult([{ resolved: { emp_id: person.emp_id, name: person.name }, temp_password: res.temp_password }]);
+      onOpenChange(false);
+    } catch (e) { toast.error(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <Dialog open={person !== null} onOpenChange={(o) => !busy && onOpenChange(o)}>
+        <DialogContent className="max-w-[460px] bg-surface-raised">
+          <DialogHeader><DialogTitle className="text-xl font-semibold text-ink-strong">Reset password</DialogTitle></DialogHeader>
+          <p className="text-sm text-ink-muted">
+            This gives <strong>{person?.name}</strong> a new temporary password and their current one stops working immediately. The new password is shown once.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button disabled={busy} onClick={reset}>{busy ? 'Working…' : 'Reset password'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <CredentialsDialog open={result !== null} onOpenChange={(o) => !o && setResult(null)} results={result} title="New temporary password" />
+    </>
+  );
 }

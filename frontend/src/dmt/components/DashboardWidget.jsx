@@ -67,12 +67,12 @@ function KpiStatWidget({ deptName, kpis, entryByKpi }) {
     );
 }
 
-function TaskCountWidget({ deptName, tasks }) {
+function TaskCountWidget({ tasks }) {
     const navigate = useNavigate();
     const open = tasks.filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
     const overdue = open.filter((t) => t.due_date && t.due_date.slice(0, 10) < todayStr());
     return (
-        <Shell title="Open tasks" subtitle={deptName}>
+        <Shell title="My open tasks" subtitle="Just yours">
             <button type="button" onClick={() => navigate('/dmt/tasks')} className="w-full text-left">
                 <div className="flex items-center gap-2 text-slate-900">
                     <ListTodo size={18} className="text-slate-400" />
@@ -86,14 +86,14 @@ function TaskCountWidget({ deptName, tasks }) {
     );
 }
 
-function TaskListWidget({ deptName, tasks }) {
+function TaskListWidget({ tasks }) {
     const navigate = useNavigate();
     const open = tasks
         .filter((t) => t.status !== 'completed' && t.status !== 'cancelled')
         .sort((a, b) => (a.due_date || '9999').localeCompare(b.due_date || '9999'))
         .slice(0, 8);
     return (
-        <Shell title="Open tasks" subtitle={deptName}>
+        <Shell title="My open tasks" subtitle="Just yours">
             {open.length === 0 ? (
                 <p className="py-3 text-center text-xs text-slate-400">Nothing open.</p>
             ) : (
@@ -123,12 +123,13 @@ function TaskListWidget({ deptName, tasks }) {
 
 export function DashboardWidget({
     widget, kpiById, deptById, entryByKpi, allKpis, allTasks, chartEntries,
-    savedChartById, savedChartLinks,
+    savedChartById, savedChartLinks, myEmpId,
 }) {
     const cfg = widget.config || {};
     const deptId = cfg.department_id || null;
     const deptName = deptId ? (deptById[deptId]?.name || 'Unknown department') : 'All departments';
     const inScope = (row) => !deptId || String(row.department_id) === String(deptId);
+    const mine = (row) => !!myEmpId && String(row.owner_id) === String(myEmpId);
 
     switch (widget.widget_type) {
         case 'kpi_chart': {
@@ -185,9 +186,9 @@ export function DashboardWidget({
         case 'kpi_stat':
             return <KpiStatWidget deptName={deptName} kpis={allKpis.filter(inScope)} entryByKpi={entryByKpi} />;
         case 'task_count':
-            return <TaskCountWidget deptName={deptName} tasks={allTasks.filter(inScope)} />;
+            return <TaskCountWidget tasks={allTasks.filter(mine)} />;
         case 'task_list':
-            return <TaskListWidget deptName={deptName} tasks={allTasks.filter(inScope)} />;
+            return <TaskListWidget tasks={allTasks.filter(mine)} />;
         default:
             return (
                 <Shell title="Unknown widget">

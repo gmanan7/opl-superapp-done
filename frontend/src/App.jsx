@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Suspense } from 'react';
 import './i18n';
 import { loadSession, getSessionContext, roleAtLeast } from './lib/auth';
@@ -33,17 +33,8 @@ import { DmtKpiTrends } from './dmt/pages/DmtKpiTrends';
 import { DmtCompliance } from './dmt/pages/DmtCompliance';
 import { DmtDecisionLog } from './dmt/pages/DmtDecisionLog';
 import { DmtOrganisation } from './dmt/pages/DmtOrganisation';
-import { DmtAdminAudit } from './dmt/pages/DmtAdminAudit';
 import { DmtAdminTaskOverview } from './dmt/pages/DmtAdminTaskOverview';
-import { DmtAdminCharts } from './dmt/pages/DmtAdminCharts';
-const queryClient = new QueryClient({
-    defaultOptions: {
-        queries: {
-            retry: 1,
-            staleTime: 1000 * 60 * 5,
-        },
-    },
-});
+import { queryClient } from './lib/queryClient';
 function RequireAuth({ children }) {
     const session = loadSession();
     if (!session)
@@ -116,16 +107,14 @@ export default function App() {
               <Route path="admin/mdm/org" element={<RequireRole minimum="be_lead">
                     <OrgStructure />
                   </RequireRole>}/>
-              <Route path="admin/mdm/machines" element={<RequireRole minimum="module_lead">
+              <Route path="admin/mdm/machines" element={<RequireRole minimum="be_lead">
                     <Machines />
                   </RequireRole>}/>
-              <Route path="admin/mdm/people" element={<RequireRole minimum="it_lead">
+              <Route path="admin/mdm/people" element={<RequireRole minimum="be_lead">
                     <People />
                   </RequireRole>}/>
-              {/* Step 8 — bulk import: high-risk mass data changes, be_lead+ only */}
-              <Route path="admin/mdm/people/import" element={<RequireRole minimum="be_lead">
-                    <BulkImport entity="workers"/>
-                  </RequireRole>}/>
+              {/* People import now lives inside the People page (Onboard people -> Import from Excel) */}
+              <Route path="admin/mdm/people/import" element={<Navigate to="/admin/mdm/people" replace/>}/>
               <Route path="admin/mdm/machines/import" element={<RequireRole minimum="be_lead">
                     <BulkImport entity="machines"/>
                   </RequireRole>}/>
@@ -168,8 +157,6 @@ export default function App() {
               <Route path="admin/analytics" element={<Navigate to="/dmt/organisation" replace />}/>
               <Route path="organisation" element={<DmtOrganisation />}/>
               <Route path="admin/tasks" element={<DmtAdminTaskOverview />}/>
-              <Route path="admin/charts" element={<DmtAdminCharts />}/>
-              <Route path="admin/audit" element={<DmtAdminAudit />}/>
             </Route>
 
             {/* Fallback */}

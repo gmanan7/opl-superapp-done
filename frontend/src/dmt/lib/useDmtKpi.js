@@ -11,16 +11,26 @@ export function useDmtDepartments() {
     });
 }
 
-// KPI master list, department name resolved client-side from the departments list.
+export function useDmtModules() {
+    return useQuery({ queryKey: ['dmt', 'module-names'], queryFn: dmtApi.moduleNames, staleTime: 1000 * 60 * 10 });
+}
+
+// KPI master list, department + module resolved client-side from their own lists.
 export function useDmtKpiMaster(deptFilter = 'all') {
     const departments = useDmtDepartments();
+    const modules = useDmtModules();
     const kpis = useQuery({
         queryKey: ['dmt', 'kpi-master', deptFilter],
         queryFn: () => dmtApi.list('kpi-master', deptFilter !== 'all' ? { department_id: deptFilter } : undefined),
     });
     const deptById = Object.fromEntries((departments.data || []).map((d) => [d.id, d]));
-    const rows = (kpis.data || []).map((k) => ({ ...k, department: deptById[k.department_id] || null }));
-    return { departments, kpis: { ...kpis, rows } };
+    const moduleById = Object.fromEntries((modules.data || []).map((m) => [m.id, m]));
+    const rows = (kpis.data || []).map((k) => ({
+        ...k,
+        department: deptById[k.department_id] || null,
+        module: moduleById[k.module_id] || null,
+    }));
+    return { departments, modules, kpis: { ...kpis, rows } };
 }
 
 export function useDmtKpiMutations() {

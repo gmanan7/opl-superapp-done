@@ -1,6 +1,7 @@
 import { api } from './api';
 import { RESOLVABLE_LANGS } from '../i18n';
 import { safeStorage } from './safeStorage';
+import { queryClient } from './queryClient';
 export function getLangPref(session) {
     return session.lang_pref;
 }
@@ -15,6 +16,8 @@ function resolveAuthedLang(profileLang) {
 const SESSION_KEY = 'tpm_session';
 export const LOGIN_AT_KEY = 'tpm_login_at';
 export function saveSession(session) {
+    // A new identity must never inherit the previous user's cached data (e.g. DMT role).
+    queryClient.clear();
     safeStorage.setItem(SESSION_KEY, JSON.stringify(session));
     safeStorage.setItem(LOGIN_AT_KEY, String(Date.now()));
 }
@@ -30,6 +33,7 @@ export function loadSession() {
     }
 }
 export function clearSession() {
+    queryClient.clear();
     safeStorage.removeItem(SESSION_KEY);
     safeStorage.removeItem(LOGIN_AT_KEY);
 }

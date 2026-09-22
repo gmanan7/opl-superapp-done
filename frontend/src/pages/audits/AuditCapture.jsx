@@ -58,6 +58,8 @@ export function AuditCapture() {
   const structure = submission?.structure || 'categories_questions';
   const scoringMode = submission?.scoring_mode || 'required';
   const usesCategories = structure === 'categories';
+  // A 0–1 scale in steps of 1 is a Yes (1) / No (0) audit.
+  const yesNo = Number(submission?.score_min) === 0 && Number(submission?.score_max) === 1 && Number(submission?.score_step) === 1;
   const scale = useMemo(
     () => buildScale(submission?.score_min ?? 1, submission?.score_max ?? 4, submission?.score_step ?? 1),
     [submission?.score_min, submission?.score_max, submission?.score_step],
@@ -220,7 +222,7 @@ export function AuditCapture() {
                   onClick={() => setAnswer(it.key, { score: a.score === s ? null : s })}
                   className={`min-w-[3rem] flex-1 rounded-md border py-2 text-sm font-semibold ${Number(a.score) === s ? 'border-primary bg-primary/10 text-primary' : 'border-slate-200 text-slate-600'}`}
                 >
-                  {fmtNum(s)}
+                  {yesNo ? (Number(s) === 1 ? 'Yes' : 'No') : fmtNum(s)}
                 </button>
               ))}
             </div>

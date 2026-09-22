@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Play, Square, ArrowLeft, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Loader2, Play, Square, ArrowLeft, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronUp, AlertTriangle, History, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -18,6 +18,8 @@ import { useDmtMe } from '../lib/useDmt';
 import { useDmtWorkers } from '../lib/useDmtTasks';
 import { useDmtDepartments } from '../lib/useDmtKpi';
 import { useDmtMeeting, useMeetingChildren, useMeetingMutations } from '../lib/useDmtMeetings';
+import { useDmtTiers, useDmtTierMembers } from '../lib/useDmtTiers';
+import { tierLabel } from '../lib/taskExtras';
 import { dmtApi } from '../lib/dmtApi';
 import { fmtLong, todayStr } from '../lib/dmtDates';
 import { computeRagFromValue, calculateMtd, RAG_BADGE } from '../lib/kpiChart';
@@ -31,76 +33,137 @@ const STATUS_CLS = {
 };
 const ATT_CLS = { present: 'bg-emerald-600 text-white', absent: 'bg-rose-600 text-white', excused: 'bg-amber-500 text-white' };
 
-function AttendanceTab({ meeting, readOnly, me }) {
+// The attendance sheet = the meeting's group (members, Lead, Co-facilitator, facilitator), listed automatically, plus people
+// the facilitator / co-facilitator added from outside the group for THIS meeting only. The facilitator and co-facilitator
+// mark anyone; everyone else marks only their own name. Once marked, a row is locked behind an Edit button.
+function AttendanceTab({ meeting, me, canManage, closed, isParticipant }) {
+    const qc = useQueryClient();
     const { invitees, attendance } = useMeetingChildren(meeting.id);
     const { addInvitee, markAttendance } = useMeetingMutations(meeting.id);
     const workers = useDmtWorkers();
+    const myTiers = useDmtTiers();
+    const groupMembers = useDmtTierMembers(meeting.tier_id);
+    const tier = (myTiers.data || []).find((t) => t.id === meeting.tier_id);
     const [addUserId, setAddUserId] = useState('');
+    const [editingId, setEditingId] = useState(null); // invitee whose already-marked attendance is being changed
     const nameById = Object.fromEntries((workers.data || []).map((w) => [w.id || w.emp_id, w.name]));
+
+    // Bring the list in line with the group once per meeting (new members since it was created, people who left).
+    const synced = useRef(null);
+    useEffect(() => {
+        if (closed || !isParticipant || synced.current === meeting.id) return;
+        synced.current = meeting.id;
+        dmtApi.syncMeetingAttendees(meeting.id)
+            .then(() => qc.invalidateQueries({ queryKey: ['dmt', 'meeting-invitees', meeting.id] }))
+            .catch(() => { /* the list still shows what is stored */ });
+    }, [meeting.id, closed, isParticipant, qc]);
+    const removeExtra = useMutation({
+        mutationFn: (id) => dmtApi.remove('meeting-invitees', id),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['dmt', 'meeting-invitees', meeting.id] }),
+        onError: (e) => toast.error(e.message),
+    });
 
     const attByInvitee = Object.fromEntries((attendance.data || []).map((a) => [a.invitee_id, a]));
     const present = (attendance.data || []).filter((a) => a.status === 'present').length;
+    const nameOf = (inv) => (inv.user_id ? (nameById[inv.user_id] || inv.user_id) : (inv.guest_name || 'Unknown'));
+    const sheet = (invitees.data || []).slice().sort((a, b) => (a.source === 'extra') - (b.source === 'extra') || nameOf(a).localeCompare(nameOf(b)));
+    // "Add person" is only for people OUTSIDE this meeting's group: hide everyone already on the sheet or in the group.
+    const inGroup = new Set([
+        ...(groupMembers.data || []).map((m) => m.emp_id), tier?.lead_emp_id, tier?.co_facilitator_emp_id, meeting.facilitator_id,
+        ...(invitees.data || []).map((i) => i.user_id),
+    ].filter(Boolean));
+    const canMark = (inv) => !closed && (canManage || (!!inv.user_id && inv.user_id === me));
 
     return (
         <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <Badge variant="secondary" className="text-xs">{present} present / {(invitees.data || []).length} invited</Badge>
-                {!readOnly && (
+                <Badge variant="secondary" className="text-xs">{present} present / {sheet.length} on the list</Badge>
+                {canManage && !closed && (
                     <div className="flex items-center gap-2">
                         <Select value={addUserId} onValueChange={setAddUserId}>
-                            <SelectTrigger className="h-9 w-48 text-sm"><SelectValue placeholder="Add person…" /></SelectTrigger>
+                            <SelectTrigger className="h-9 w-52 text-sm"><SelectValue placeholder="Add person…" /></SelectTrigger>
                             <SelectContent>
-                                {(workers.data || []).map((w) => <SelectItem key={w.id || w.emp_id} value={w.id || w.emp_id}>{w.name}</SelectItem>)}
+                                {(workers.data || []).filter((w) => w.is_active && !inGroup.has(w.id || w.emp_id))
+                                    .map((w) => <SelectItem key={w.id || w.emp_id} value={w.id || w.emp_id}>{w.name}</SelectItem>)}
                             </SelectContent>
                         </Select>
-                        <Button size="sm" disabled={!addUserId} onClick={() => {
+                        <Button size="sm" disabled={!addUserId || addInvitee.isPending} onClick={() => {
                             addInvitee.mutate({ user_id: addUserId }, { onSuccess: () => setAddUserId(''), onError: (e) => toast.error(e.message) });
                         }}><Plus className="h-4 w-4" /></Button>
                     </div>
                 )}
             </div>
+            <p className="-mt-2 text-xs text-slate-500">
+                {canManage
+                    ? "Your group's people are listed automatically. Use Add person for someone outside the group — they are added to this meeting only, not to the rest of a recurring series."
+                    : 'You can mark your own attendance; the facilitator and co-facilitator mark the rest.'}
+            </p>
 
             {invitees.isLoading ? <Loader2 className="mx-auto h-5 w-5 animate-spin" /> : (
                 <div className="space-y-2">
-                    {(invitees.data || []).map((inv) => {
+                    {sheet.map((inv) => {
                         const att = attByInvitee[inv.id];
-                        const name = inv.user_id ? (nameById[inv.user_id] || inv.user_id) : (inv.guest_name || 'Unknown');
+                        const name = nameOf(inv);
+                        const mine = !!inv.user_id && inv.user_id === me;
                         return (
                             <div key={inv.id} className="rounded-lg border border-slate-200 bg-white p-3">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <div>
-                                        <p className="text-sm font-medium">{name}</p>
-                                        {inv.is_mandatory && <Badge className="mt-0.5 bg-blue-100 text-[10px] text-blue-700">Mandatory</Badge>}
+                                        <p className="text-sm font-medium">{name}{mine && <span className="ml-1 text-xs font-normal text-slate-400">(you)</span>}</p>
+                                        <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                            {inv.source === 'extra' && <Badge className="bg-violet-100 text-[10px] text-violet-700">Added for this meeting</Badge>}
+                                            {inv.source === 'extra' && canManage && !closed && !att && (
+                                                <button type="button" onClick={() => removeExtra.mutate(inv.id)} className="text-[11px] text-slate-400 underline hover:text-rose-600">Remove</button>
+                                            )}
+                                        </div>
                                     </div>
-                                    {readOnly ? (
+                                    {!canMark(inv) ? (
                                         <Badge className={cn('text-[10px]', ATT_CLS[att?.status] || 'bg-slate-100 text-slate-500')}>{att?.status || 'Not marked'}</Badge>
+                                    ) : att && editingId !== inv.id ? (
+                                        // Once marked, attendance is locked; the Edit button is the only way to change it.
+                                        <div className="flex items-center gap-2">
+                                            <Badge className={cn('text-xs capitalize', ATT_CLS[att.status])}>{att.status}</Badge>
+                                            <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={() => setEditingId(inv.id)}>
+                                                <Pencil className="h-3 w-3" /> Edit
+                                            </Button>
+                                        </div>
                                     ) : (
-                                        <div className="flex gap-1">
+                                        <div className="flex flex-wrap items-center gap-1">
                                             {['present', 'absent', 'excused'].map((s) => (
                                                 <Button
                                                     key={s}
                                                     size="sm"
                                                     variant={att?.status === s ? 'default' : 'outline'}
                                                     className={cn('h-8 text-xs capitalize', att?.status === s && ATT_CLS[s])}
-                                                    onClick={() => markAttendance.mutate({ existing: att, inviteeId: inv.id, status: s, marked_by: me })}
+                                                    disabled={markAttendance.isPending}
+                                                    onClick={() => {
+                                                        if (att?.status === s) { setEditingId(null); return; } // unchanged
+                                                        markAttendance.mutate(
+                                                            { existing: att, inviteeId: inv.id, status: s, marked_by: me },
+                                                            { onSuccess: () => setEditingId(null), onError: (e) => toast.error(e.message) },
+                                                        );
+                                                    }}
                                                 >
                                                     {s}
                                                 </Button>
                                             ))}
+                                            {att && <Button size="sm" variant="ghost" className="h-8 text-xs text-slate-500" onClick={() => setEditingId(null)}>Cancel</Button>}
                                         </div>
                                     )}
                                 </div>
                             </div>
                         );
                     })}
-                    {(invitees.data || []).length === 0 && <p className="text-sm text-slate-400">No one invited yet.</p>}
+                    {sheet.length === 0 && <p className="text-sm text-slate-400">No one is on the list yet — the group has no members.</p>}
                 </div>
             )}
         </div>
     );
 }
 
-function PointCard({ point, readOnly, onNotes, onMove, isFirst, isLast }) {
+// readOnly = can't add/reorder at all. canEditNotes = this person added the point (or it has no recorded author), so only
+// they may edit its notes; everyone else can read them.
+function PointCard({ point, readOnly, canEditNotes, authorName, onNotes, onMove, isFirst, isLast }) {
     const [expanded, setExpanded] = useState(false);
     const [notes, setNotes] = useState(point.notes || '');
     const deb = useRef(null);
@@ -124,15 +187,22 @@ function PointCard({ point, readOnly, onNotes, onMove, isFirst, isLast }) {
                 )}
             </div>
             {expanded && (
-                <Textarea value={notes} onChange={(e) => change(e.target.value)} placeholder="Notes…" rows={2} disabled={readOnly} className="mt-2 text-sm" />
+                <>
+                    <Textarea value={notes} onChange={(e) => change(e.target.value)} placeholder="Notes…" rows={2} disabled={readOnly || !canEditNotes} className="mt-2 text-sm" />
+                    {authorName && <p className="mt-1 text-xs text-slate-500">Added by {authorName}{canEditNotes ? '' : ' — only they can edit these notes'}</p>}
+                </>
             )}
         </div>
     );
 }
 
-function NotesTab({ meeting, readOnly }) {
+function NotesTab({ meeting, readOnly, me }) {
     const { points } = useMeetingChildren(meeting.id);
     const { setMeeting, addPoint, updatePoint } = useMeetingMutations(meeting.id);
+    const workers = useDmtWorkers();
+    const nameById = Object.fromEntries((workers.data || []).map((w) => [w.id || w.emp_id, w.name]));
+    // The meeting notes belong to whoever wrote them: once written, only that person can edit them.
+    const notesLocked = !!(meeting.summary || '').trim() && !!meeting.summary_by && meeting.summary_by !== me;
     const [summary, setSummary] = useState(meeting.summary || '');
     const [newTitle, setNewTitle] = useState('');
     const [savedTick, setSavedTick] = useState(false);
@@ -155,14 +225,15 @@ function NotesTab({ meeting, readOnly }) {
                     <label className="text-sm font-semibold">Meeting Notes</label>
                     <Button
                         size="sm"
-                        disabled={readOnly || setMeeting.isPending}
+                        disabled={readOnly || notesLocked || setMeeting.isPending}
                         className={cn('h-8', savedTick && 'bg-emerald-600 text-white hover:bg-emerald-700')}
                         onClick={() => setMeeting.mutate({ summary }, { onSuccess: () => { setSavedTick(true); setTimeout(() => setSavedTick(false), 1500); }, onError: (e) => toast.error(e.message) })}
                     >
                         {savedTick ? 'Saved' : 'Save'}
                     </Button>
                 </div>
-                <Textarea value={summary} onChange={(e) => setSummary(e.target.value)} disabled={readOnly} rows={4} placeholder="Overall meeting notes…" />
+                <Textarea value={summary} onChange={(e) => setSummary(e.target.value)} disabled={readOnly || notesLocked} rows={4} placeholder="Overall meeting notes…" />
+                {notesLocked && <p className="mt-1 text-xs text-slate-500">Written by {nameById[meeting.summary_by] || meeting.summary_by} — only they can edit these notes.</p>}
             </div>
 
             <div className="space-y-2">
@@ -172,6 +243,8 @@ function NotesTab({ meeting, readOnly }) {
                         key={p.id}
                         point={p}
                         readOnly={readOnly}
+                        canEditNotes={!p.created_by || p.created_by === me}
+                        authorName={p.created_by ? (nameById[p.created_by] || p.created_by) : null}
                         onNotes={(notes) => updatePoint.mutate({ id: p.id, notes })}
                         onMove={(dir) => move(p.id, dir)}
                         isFirst={i === 0}
@@ -205,6 +278,8 @@ function NotesTab({ meeting, readOnly }) {
 function DecisionsTab({ meeting, readOnly, me }) {
     const { decisions, points } = useMeetingChildren(meeting.id);
     const { addDecision } = useMeetingMutations(meeting.id);
+    const workers = useDmtWorkers();
+    const nameById = Object.fromEntries((workers.data || []).map((w) => [w.id || w.emp_id, w.name]));
     const [text, setText] = useState('');
     const [linkedPoint, setLinkedPoint] = useState('');
 
@@ -219,6 +294,7 @@ function DecisionsTab({ meeting, readOnly, me }) {
                                 On: {(points.data || []).find((p) => p.id === d.discussion_point_id)?.title || '—'}
                             </p>
                         )}
+                        {d.created_by && <p className="mt-1 text-xs text-slate-400">Added by {nameById[d.created_by] || d.created_by}</p>}
                     </div>
                 ))}
                 {(decisions.data || []).length === 0 && <p className="text-sm text-slate-400">No decisions recorded.</p>}
@@ -268,7 +344,8 @@ function KpiSnapshotTab({ meeting, readOnly, me }) {
     const meetingTasks = useQuery({ queryKey: ['dmt', 'mw-tasks', meeting.id], queryFn: () => dmtApi.list('tasks', { origin_meeting_id: meeting.id }) });
 
     const [taskFor, setTaskFor] = useState(null); // { kpi, entry }
-    const [tf, setTf] = useState({ title: '', owner_id: '', priority: 'high', due_date: '' });
+    const [tf, setTf] = useState({ title: '', owner_id: '', priority: 'high', due_date: '', tier_id: '' });
+    const myTiers = useDmtTiers();
 
     const entryByKpi = Object.fromEntries((dayEntries.data || []).map((e) => [e.kpi_id, e]));
     const mtdByKpi = useMemo(() => {
@@ -290,7 +367,6 @@ function KpiSnapshotTab({ meeting, readOnly, me }) {
             const factories = await dmtApi.list('factory');
             return dmtApi.create('tasks', {
                 title: tf.title.trim(),
-                department_id: taskFor.kpi.department_id,
                 owner_id: tf.owner_id,
                 assigned_by: me,
                 created_by: me,
@@ -299,6 +375,7 @@ function KpiSnapshotTab({ meeting, readOnly, me }) {
                 origin_type: 'kpi_red',
                 origin_meeting_id: meeting.id,
                 origin_kpi_entry_id: taskFor.entry?.id || null,
+                tier_id: tf.tier_id || null,
             });
         },
         onSuccess: () => {
@@ -336,7 +413,7 @@ function KpiSnapshotTab({ meeting, readOnly, me }) {
                                             {rag === 'red' && !readOnly && (
                                                 linked
                                                     ? <span className="text-xs text-emerald-600">task created</span>
-                                                    : <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setTaskFor({ kpi: k, entry: e }); setTf({ title: `Action for Red KPI: ${k.name}`, owner_id: '', priority: 'high', due_date: '' }); }}>Create Task</Button>
+                                                    : <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setTaskFor({ kpi: k, entry: e }); setTf({ title: `Action for Red KPI: ${k.name}`, owner_id: '', priority: 'high', due_date: '', tier_id: '' }); }}>Create Task</Button>
                                             )}
                                         </td>
                                     </tr>
@@ -365,6 +442,13 @@ function KpiSnapshotTab({ meeting, readOnly, me }) {
                             </Select>
                             <input type="date" min={todayStr()} value={tf.due_date} onChange={(e) => setTf({ ...tf, due_date: e.target.value })} className="h-11 rounded-md border border-slate-200 px-3 text-sm" />
                         </div>
+                        <Select value={tf.tier_id || undefined} onValueChange={(v) => setTf({ ...tf, tier_id: v })}>
+                            <SelectTrigger className="h-11"><SelectValue placeholder="Tier (who sees this task)" /></SelectTrigger>
+                            <SelectContent>
+                                {(myTiers.data || []).map((t) => <SelectItem key={t.id} value={t.id}>{tierLabel(t)}</SelectItem>)}
+                            </SelectContent>
+                        </Select>
+                        <p className="text-xs text-slate-400">Leave blank to make this task visible to everyone.</p>
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setTaskFor(null)}>Cancel</Button>
@@ -407,6 +491,7 @@ export function DmtMeetingWorkspace() {
     const me = user?.emp_id;
     const meeting = useDmtMeeting(id);
     const { setMeeting } = useMeetingMutations(id);
+    const myTiers = useDmtTiers();
     const [tab, setTab] = useState('kpi');
     const [endWarn, setEndWarn] = useState(null); // count of unaddressed red KPIs
 
@@ -429,8 +514,16 @@ export function DmtMeetingWorkspace() {
     if (meeting.isError || !meeting.data) return <p className="py-16 text-center text-sm text-slate-500">Meeting not found.</p>;
 
     const m = meeting.data;
-    const canManage = tierAtLeast('module_lead') || m.facilitator_id === me || m.created_by === me;
-    const readOnly = !canManage || m.status === 'completed' || m.status === 'cancelled';
+    const myGroup = (myTiers.data || []).find((t) => t.id === m.tier_id);
+    // Managers run the meeting (details, attendance, extra people): the facilitator, the group's Co-facilitator, the
+    // creator, and module lead and above.
+    const canManage = tierAtLeast('module_lead') || m.facilitator_id === me || m.created_by === me || myGroup?.co_facilitator_emp_id === me;
+    const closed = m.status === 'completed' || m.status === 'cancelled';
+    const readOnly = !canManage || closed;
+    // Anyone who is part of the meeting — a member, Lead or Co-facilitator of its group, or a manager — can ADD notes,
+    // discussion points and decisions while it is open; what one person added can only be edited by that person.
+    const isParticipant = canManage || (!!myGroup && (myGroup.is_member || myGroup.lead_emp_id === me));
+    const writeReadOnly = !isParticipant || closed;
 
     const TABS = [
         { key: 'kpi', label: 'KPI Snapshot' },
@@ -462,6 +555,12 @@ export function DmtMeetingWorkspace() {
                         {m.location ? ` · ${m.location}` : ''}
                     </p>
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                {tierAtLeast('leadership') && (
+                    <Button size="sm" variant="ghost" className="gap-1 text-slate-600" onClick={() => navigate(`/dmt/organisation?tab=meeting-audit&meeting=${m.id}`)}>
+                        <History className="h-4 w-4" /> Audit trail
+                    </Button>
+                )}
                 {canManage && m.status === 'scheduled' && (
                     <Button size="sm" className="gap-1" onClick={() => setMeeting.mutate({ status: 'in_progress', actual_start: new Date().toISOString() }, { onSuccess: () => toast.success('Meeting started') })}>
                         <Play className="h-4 w-4" /> Start
@@ -475,6 +574,7 @@ export function DmtMeetingWorkspace() {
                         <Square className="h-4 w-4" /> Complete
                     </Button>
                 )}
+                </div>
             </div>
 
             <Dialog open={endWarn != null} onOpenChange={(v) => !v && setEndWarn(null)}>
@@ -504,10 +604,11 @@ export function DmtMeetingWorkspace() {
                 ))}
             </div>
 
-            {tab === 'kpi' && <KpiSnapshotTab meeting={m} readOnly={readOnly} me={me} />}
-            {tab === 'attendance' && <AttendanceTab meeting={m} readOnly={readOnly} me={me} />}
-            {tab === 'notes' && <NotesTab meeting={m} readOnly={readOnly} />}
-            {tab === 'decisions' && <DecisionsTab meeting={m} readOnly={readOnly} me={me} />}
+            {/* Raising tasks has no restriction (any status), so the KPI tab is never read-only for it */}
+            {tab === 'kpi' && <KpiSnapshotTab meeting={m} readOnly={false} me={me} />}
+            {tab === 'attendance' && <AttendanceTab meeting={m} me={me} canManage={canManage} closed={closed} isParticipant={isParticipant} />}
+            {tab === 'notes' && <NotesTab meeting={m} readOnly={writeReadOnly} me={me} />}
+            {tab === 'decisions' && <DecisionsTab meeting={m} readOnly={writeReadOnly} me={me} />}
             {tab === 'tasks' && <MeetingTasksTab meeting={m} />}
         </div>
     );

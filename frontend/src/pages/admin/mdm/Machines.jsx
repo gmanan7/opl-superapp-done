@@ -18,7 +18,7 @@ const NEW_TYPE = '__new__';
 export function filterMachines(rows, f) {
     return rows.filter((m) => (f.showInactive || m.is_active !== false)
         && (f.groupId === ALL || m.jh_group_id === f.groupId)
-        && (f.areaId === ALL || m.area_id === f.areaId)
+        && (f.moduleId === ALL || m.module_id === f.moduleId)
         && (f.type === ALL || m.machine_type === f.type));
 }
 // Pure grouping by JH group, exported for tests. Every machine surfaces —
@@ -29,7 +29,7 @@ export function groupMachines(rows) {
     for (const m of rows) {
         const entry = byGroup.get(m.jh_group_id) ?? {
             groupId: m.jh_group_id,
-            groupName: m.jh_group?.name ?? m.jh_group_id,
+            groupName: m.jh_group?.name ?? m.jh_group_id ?? '', // '' = machine has no JH group yet (shown as "No JH Group")
             machines: [],
         };
         entry.machines.push(m);
@@ -44,15 +44,16 @@ export function Machines() {
     // One query, all rows (40 machines) — filters are client-side.
     const { data: machines, isLoading } = useMachines({ includeInactive: true });
     const { data: org } = useOrgStructure();
-    const [filters, setFilters] = useState({ groupId: ALL, areaId: ALL, type: ALL, showInactive: false });
+    const [filters, setFilters] = useState({ groupId: ALL, moduleId: ALL, type: ALL, showInactive: false });
     const [dialog, setDialog] = useState(null);
     const [formError, setFormError] = useState(null);
     const [name, setName] = useState('');
-    const [code, setCode] = useState('');
     const [typeSel, setTypeSel] = useState(NEW_TYPE);
     const [typeNew, setTypeNew] = useState('');
     const [groupSel, setGroupSel] = useState('');
-    const [areaSel, setAreaSel] = useState(NONE);
+    // Module (SFM / RFM / …) and the critical flag live on the machine; the PM Schedule reads them.
+    const [moduleSel, setModuleSel] = useState(NONE);
+    const [critical, setCritical] = useState(true);
     const createMachine = useCreateMachine();
     const updateMachine = useUpdateMachine();
     const setMachineActive = useSetMachineActive();
@@ -62,7 +63,7 @@ export function Machines() {
             return [];
         return [...(org.dmts ?? []).flatMap((d) => d.jhGroups ?? []), ...(org.unassignedJhGroups ?? [])];
     }, [org]);
-    const groupsById = useMemo(() => new Map(allGroups.map((g) => [g.id, g])), [allGroups]);
+    const modules = org?.moduleNames ?? [];
     const dmtNameByGroup = useMemo(() => {
         const m = new Map();
         if (org) {
@@ -81,32 +82,34 @@ export function Machines() {
         setFormError(null);
         if (state.mode === 'edit') {
             setName(state.target.name);
-            setCode(state.target.code ?? '');
             setTypeSel(state.target.machine_type ?? NEW_TYPE);
             setTypeNew('');
-            setGroupSel(state.target.jh_group_id);
-            setAreaSel(state.target.area_id ?? NONE);
+            setGroupSel(state.target.jh_group_id ?? '');
+            setModuleSel(state.target.module_id ?? NONE);
+            setCritical(state.target.is_critical !== false);
         }
         else {
             setName('');
-            setCode('');
             setTypeSel(NEW_TYPE);
             setTypeNew('');
             setGroupSel('');
-            setAreaSel(NONE);
+            setModuleSel(NONE);
+            setCritical(true);
         }
         setDialog(state);
     }
     function submit() {
-        if (!dialog || !name.trim() || !groupSel)
+        // A JH group is required for a NEW machine; an existing group-less machine (e.g. copied in for
+        // the PM Schedule) can be edited without being forced to pick one.
+        if (!dialog || !name.trim() || (!groupSel && dialog.mode === 'create'))
             return;
         const machine_type = typeSel === NEW_TYPE ? (typeNew.trim() || null) : typeSel;
         const payload = {
             name: name.trim(),
-            code: code.trim() || null,
             machine_type,
-            jh_group_id: groupSel,
-            area_id: areaSel === NONE ? null : areaSel,
+            jh_group_id: groupSel || null,
+            module_id: moduleSel === NONE ? null : moduleSel,
+            is_critical: critical,
         };
         const opts = { onSuccess: () => setDialog(null), onError: (e) => setFormError(e) };
         if (dialog.mode === 'create')
@@ -119,7 +122,6 @@ export function Machines() {
             return;
         setMachineActive.mutate({ id: m.id, is_active: makeActive }, { onError: (e) => setFormError(e) });
     }
-    const dialogAreas = groupsById.get(groupSel)?.areas ?? [];
     return (<div className="mx-auto max-w-4xl px-gutter py-6 lg:px-gutter-lg">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold text-ink-strong">{t('mdm.machines.title')}</h1>
@@ -135,7 +137,7 @@ export function Machines() {
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Select value={filters.groupId} onValueChange={(v) => setFilters((f) => ({ ...f, groupId: v, areaId: ALL }))}>
+        <Select value={filters.groupId} onValueChange={(v) => setFilters((f) => ({ ...f, groupId: v }))}>
           <SelectTrigger className="w-44" aria-label={t('mdm.machines.fieldGroup')}>
             <SelectValue />
           </SelectTrigger>
@@ -144,15 +146,13 @@ export function Machines() {
             {allGroups.map((g) => <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Select value={filters.areaId} onValueChange={(v) => setFilters((f) => ({ ...f, areaId: v }))}>
-          <SelectTrigger className="w-40" aria-label={t('mdm.machines.fieldArea')}>
+        <Select value={filters.moduleId} onValueChange={(v) => setFilters((f) => ({ ...f, moduleId: v }))}>
+          <SelectTrigger className="w-40" aria-label={t('mdm.machines.fieldModule')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>{t('mdm.machines.allAreas')}</SelectItem>
-            {(filters.groupId === ALL
-            ? allGroups.flatMap((g) => g.areas ?? [])
-            : groupsById.get(filters.groupId)?.areas ?? []).map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+            <SelectItem value={ALL}>{t('mdm.machines.allModules')}</SelectItem>
+            {modules.map((mo) => <SelectItem key={mo.id} value={mo.id}>{mo.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={filters.type} onValueChange={(v) => setFilters((f) => ({ ...f, type: v }))}>
@@ -175,9 +175,9 @@ export function Machines() {
       {isLoading && <p className="text-sm text-ink-muted">{t('common.loading')}</p>}
 
       <div className="space-y-4">
-        {grouped.map(({ groupId, groupName, machines: rows }) => (<section key={groupId} className="rounded-lg border border-line bg-surface-raised shadow-xs">
+        {grouped.map(({ groupId, groupName, machines: rows }) => (<section key={groupId ?? 'no-group'} className="rounded-lg border border-line bg-surface-raised shadow-xs">
             <header className="flex items-baseline gap-2 border-b border-line-subtle bg-surface-sunken px-4 py-2">
-              <h2 className="text-sm font-semibold text-ink-strong">{groupName}</h2>
+              <h2 className="text-sm font-semibold text-ink-strong">{groupName || t('mdm.machines.noJhGroup')}</h2>
               <span className="text-2xs text-ink-subtle">
                 {dmtNameByGroup.get(groupId) ?? t('mdm.machines.noDmt')}
               </span>
@@ -186,11 +186,9 @@ export function Machines() {
               {rows.map((m) => (<li key={m.id} className="flex items-center gap-3 border-b border-line-subtle px-4 py-2 last:border-b-0 hover:bg-surface-hover">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-ink">{m.name}</p>
-                    <p className="text-2xs text-ink-subtle">
-                      {m.code && <span className="font-mono">{m.code} · </span>}
-                      {m.area?.name ?? '—'}
-                    </p>
                   </div>
+                  {m.module && <Badge variant="secondary">{m.module.name}</Badge>}
+                  {m.is_critical === false && <Badge variant="secondary">{t('mdm.machines.nonCritical')}</Badge>}
                   {m.machine_type && <Badge variant="secondary">{m.machine_type}</Badge>}
                   <ActiveBadge active={m.is_active}/>
                   <Button variant="ghost" size="sm" onClick={() => open({ mode: 'edit', target: m })}>
@@ -218,12 +216,8 @@ export function Machines() {
               <Input className="mt-1" value={name} onChange={(e) => setName(e.target.value)} maxLength={120}/>
             </label>
             <label className="block text-sm text-ink-muted">
-              {t('mdm.common.code')}
-              <Input className="mt-1" value={code} onChange={(e) => setCode(e.target.value)} maxLength={30}/>
-            </label>
-            <label className="block text-sm text-ink-muted">
               {t('mdm.machines.fieldGroup')}
-              <Select value={groupSel || undefined} onValueChange={(v) => { setGroupSel(v); setAreaSel(NONE); }}>
+              <Select value={groupSel || undefined} onValueChange={setGroupSel}>
                 <SelectTrigger className="mt-1 w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -233,14 +227,14 @@ export function Machines() {
               </Select>
             </label>
             <label className="block text-sm text-ink-muted">
-              {t('mdm.machines.fieldArea')}
-              <Select value={areaSel} onValueChange={setAreaSel}>
+              {t('mdm.machines.fieldModule')}
+              <Select value={moduleSel} onValueChange={setModuleSel}>
                 <SelectTrigger className="mt-1 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>{t('mdm.common.none')}</SelectItem>
-                  {dialogAreas.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                  {modules.map((mo) => <SelectItem key={mo.id} value={mo.id}>{mo.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </label>
@@ -258,11 +252,16 @@ export function Machines() {
               {typeSel === NEW_TYPE && (<Input className="mt-2" value={typeNew} onChange={(e) => setTypeNew(e.target.value)} maxLength={40} placeholder={t('mdm.machines.fieldType')}/>)}
               <span className="mt-1 block text-2xs text-ink-subtle">{t('mdm.machines.typeHint')}</span>
             </label>
+            <label className="flex items-center gap-2 text-sm text-ink-muted">
+              <input type="checkbox" checked={critical} onChange={(e) => setCritical(e.target.checked)} className="h-4 w-4"/>
+              {t('mdm.machines.fieldCritical')}
+            </label>
+            <span className="block text-2xs text-ink-subtle">{t('mdm.machines.pmHint')}</span>
             <MdmErrorNote error={formError}/>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialog(null)}>{t('common.cancel')}</Button>
-            <Button onClick={submit} disabled={pending || !name.trim() || !groupSel}>
+            <Button onClick={submit} disabled={pending || !name.trim() || (!groupSel && dialog?.mode === 'create')}>
               {dialog?.mode === 'create' ? t('mdm.common.create') : t('common.save')}
             </Button>
           </DialogFooter>

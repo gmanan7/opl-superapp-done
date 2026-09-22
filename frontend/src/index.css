@@ -11,6 +11,16 @@
   box-sizing: border-box;
 }
 
+/* Hides a scrollbar's track/thumb while the element stays scrollable (e.g. the DMT
+   sidebar nav) — purely visual, doesn't touch overflow behavior. */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge/IE */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/new Edge */
+}
+
 /* ---------------------------------------------------------------------------
    Screen-flexibility guardrails.
 

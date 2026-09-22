@@ -22,26 +22,30 @@ export function daysOfMonth(ref) {
     return out;
 }
 
+// A PM done or due up to this many days after its planned day is "minor"; beyond it is "major" /
+// "overdue". Single source of truth: getCellState below AND the calendar's legend both use it.
+export const PM_GRACE_DAYS = 2;
+
 // 'empty' | 'planned-future' | 'planned-past' | 'overdue' | 'done-on-time' | 'done-delayed-minor' | 'done-delayed-major'
 export function getCellState(plan, actual, date, today) {
     if (!plan && !actual) return 'empty';
     if (plan && actual) {
         const delay = daysBetween(plan.planned_date, actual.actual_date);
         if (delay <= 0) return 'done-on-time';
-        if (delay <= 2) return 'done-delayed-minor';
+        if (delay <= PM_GRACE_DAYS) return 'done-delayed-minor';
         return 'done-delayed-major';
     }
     if (plan && !actual) {
         const overdueBy = daysBetween(plan.planned_date, today);
-        if (overdueBy > 2) return 'overdue';
+        if (overdueBy > PM_GRACE_DAYS) return 'overdue';
         if (overdueBy < 0) return 'planned-future';
         return 'planned-past';
     }
     return 'done-on-time';
 }
 
-export function filterMachinesByLine(machines, line) {
-    return line === 'All' ? machines : machines.filter((m) => m.line === line);
+export function filterMachinesByModule(machines, module) {
+    return module === 'All' ? machines : machines.filter((m) => m.module === module);
 }
 
 export function filterMachinesByCriticality(machines, filter) {
@@ -53,13 +57,14 @@ export function filterMachinesByCriticality(machines, filter) {
 export function groupMachinesByGroup(machines) {
     const sorted = [...machines].sort(
         (a, b) =>
-            a.line.localeCompare(b.line) ||
-            a.group_name.localeCompare(b.group_name) ||
-            a.display_order - b.display_order,
+            (a.module || '').localeCompare(b.module || '') ||
+            (a.group_name || '').localeCompare(b.group_name || '') ||
+            (a.display_order || 0) - (b.display_order || 0) ||
+            (a.name || '').localeCompare(b.name || ''),
     );
     const out = {};
     for (const m of sorted) {
-        const key = `${m.line} — ${m.group_name}`;
+        const key = m.module ? `${m.module} — ${m.group_name}` : (m.group_name || 'No machine type');
         (out[key] = out[key] || []).push(m);
     }
     return out;

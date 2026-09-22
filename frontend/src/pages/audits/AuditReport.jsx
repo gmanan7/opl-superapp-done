@@ -10,8 +10,10 @@ const fmt2 = (n) => (n == null || Number.isNaN(Number(n)) ? '—' : Number(n).to
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
 
 // Same three bands as the printed scoring legend: top mark = Good, bottom half = Poor.
+const isYesNo = (min, max) => Number(min) === 0 && Number(max) === 1;
 function scoreBand(score, min, max) {
   if (score == null || Number.isNaN(Number(score))) return 'none';
+  if (isYesNo(min, max)) return Number(score) >= 1 ? 'good' : Number(score) >= 0.5 ? 'marginal' : 'poor';
   const mid = Math.floor((Number(min) + Number(max)) / 2);
   const s = Math.round(Number(score));
   if (s >= Number(max)) return 'good';
@@ -26,7 +28,10 @@ const BAND_CLS = {
 };
 function ScoreChip({ value, min, max, big }) {
   const has = value != null && !Number.isNaN(Number(value));
-  const label = !has ? '—' : (Number.isInteger(Number(value)) ? String(Number(value)) : Number(value).toFixed(2));
+  const yn = isYesNo(min, max);
+  const label = !has ? '—' : yn
+    ? (Number(value) === 1 ? 'Yes' : Number(value) === 0 ? 'No' : `${Math.round(Number(value) * 100)}%`)
+    : (Number.isInteger(Number(value)) ? String(Number(value)) : Number(value).toFixed(2));
   const band = has ? scoreBand(value, min, max) : 'none';
   return (
     <span className={`inline-flex shrink-0 items-center justify-center rounded font-bold ring-1 ${BAND_CLS[band]} ${
@@ -106,7 +111,7 @@ export function AuditReport() {
       {/* The document */}
       <div className="audit-report mx-auto my-4 max-w-[820px] bg-white p-6 shadow-sm sm:my-8 sm:p-10 print:my-0 print:p-0">
         <header className="border-b-2 border-slate-900 pb-3">
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{plant_name ? `${plant_name} · ` : ''}TPM Fulcrum</p>
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{plant_name ? `${plant_name} · ` : ''}FOCUS</p>
           <h1 className="mt-1 text-2xl font-bold">{template.name} — {mode === 'individual' ? 'Auditor Report' : 'Audit Report'}</h1>
         </header>
 
@@ -224,7 +229,7 @@ export function AuditReport() {
         </section>
 
         <footer className="no-print mt-8 border-t border-slate-200 pt-3 text-center text-xs text-slate-400">
-          Generated from TPM Fulcrum · {fmtDate(new Date())}
+          Generated from FOCUS · {fmtDate(new Date())}
         </footer>
       </div>
     </div>

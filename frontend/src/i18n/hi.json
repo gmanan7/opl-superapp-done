@@ -43,11 +43,11 @@
     "more": "अधिक",
     "people": "कर्मचारी",
     "profile": "प्रोफ़ाइल",
-    "language": "भाषा"
+    "language": "भाषा",
+    "switchModule": "{{name}} पर जाएँ"
   },
   "login": {
-    "title": "TPM Fulcrum",
-    "subtitle": "फैक्ट्री प्रबंधन",
+    "title": "FOCUS",
     "tabPin": "टीम सदस्य PIN",
     "tabEmail": "लीडर लॉगिन",
     "employeeId": "कर्मचारी ID",
@@ -502,7 +502,7 @@
     },
     "deactivate": {
       "title": "{{name}} को निष्क्रिय करें?",
-      "description": "वे Fulcrum में साइन इन नहीं कर पाएँगे। उनके दर्ज ऑडिट और Kaizen सुरक्षित रहेंगे।",
+      "description": "वे FOCUS में साइन इन नहीं कर पाएँगे। उनके दर्ज ऑडिट और Kaizen सुरक्षित रहेंगे।",
       "c1": "यदि साइन इन हैं तो उनका सत्र हट जाएगा",
       "c2": "नए Kaizen टीम चयन में नहीं दिखेंगे",
       "c3": "PIN अमान्य हो जाएगा; पुनः सक्रिय करने पर नया PIN लगेगा",

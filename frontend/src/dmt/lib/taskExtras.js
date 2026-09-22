@@ -41,29 +41,25 @@ export function isCarryover(task, historyIds) {
     return historyIds.has(task.id);
 }
 
-// ---- groups ----
-export const GROUP_COLOR_PRESETS = [
-    { name: 'Indigo', value: '#6366f1' }, { name: 'Rose', value: '#f43f5e' },
-    { name: 'Amber', value: '#f59e0b' }, { name: 'Green', value: '#10b981' },
-    { name: 'Teal', value: '#14b8a6' }, { name: 'Orange', value: '#f97316' },
-    { name: 'Purple', value: '#a855f7' }, { name: 'Slate', value: '#64748b' },
-];
+// ---- tiers (replaced the old ad-hoc task groups — see taskVisibility below) ----
 export const truncateGroupName = (name, max = 12) =>
     !name ? '' : (name.length <= max ? name : `${name.slice(0, max - 1)}…`);
 
-// tier: 'jh_lead' | 'module_lead' | 'leadership' | 'be_lead'
-export const canCreateGroup = (tier) => ['module_lead', 'leadership', 'be_lead'].includes(tier);
-export const canDeleteGroup = (tier) => ['leadership', 'be_lead'].includes(tier);
-export function canManageGroupMembers(group, me, tier) {
-    if (['leadership', 'be_lead'].includes(tier)) return true;
-    return tier === 'module_lead' && group?.created_by === me;
+// "T4" (or a BE-admin-chosen custom name), "T3 · <DMT name>", or "T2 · <JH group name>" —
+// dmt_name/jh_group_name come from GET /api/dmt/tiers's join; `name` itself is always just
+// "T4"/"T3"/"T2" internally, regardless of what's shown. A custom `display_name` (currently
+// only settable on T4-level groups) always wins over the generated label.
+export function tierLabel(tier) {
+    if (!tier) return '';
+    if (tier.display_name) return tier.display_name;
+    if (tier.jh_group_name) return `${tier.name} · ${tier.jh_group_name}`;
+    if (tier.dmt_name) return `${tier.name} · ${tier.dmt_name}`;
+    return tier.name;
 }
-export const canManageLeaders = (group, me, tier) =>
-    ['leadership', 'be_lead'].includes(tier) || group?.created_by === me;
 
-// "Visible to" choice -> {is_private, task_group_id}
+// "Visible to" choice -> {is_private, tier_id}
 export function taskVisibility(choice) {
-    if (choice === 'everyone') return { is_private: false, task_group_id: null };
-    if (choice === 'private') return { is_private: true, task_group_id: null };
-    return { is_private: false, task_group_id: choice };
+    if (choice === 'everyone') return { is_private: false, tier_id: null };
+    if (choice === 'private') return { is_private: true, tier_id: null };
+    return { is_private: false, tier_id: choice };
 }

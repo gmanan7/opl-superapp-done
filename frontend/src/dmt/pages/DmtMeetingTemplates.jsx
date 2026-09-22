@@ -11,20 +11,26 @@ import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '../../components/ui/dialog';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../components/ui/sheet';
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '../../components/ui/select';
 import { dmtApi } from '../lib/dmtApi';
 import { useDmtMe } from '../lib/useDmt';
 import { useDmtWorkers } from '../lib/useDmtTasks';
+import { useDmtTiers } from '../lib/useDmtTiers';
+import { tierLabel } from '../lib/taskExtras';
 
 function TemplateForm({ open, onOpenChange, template, me, onSaved }) {
     const qc = useQueryClient();
-    const [f, setF] = useState({ name: '', description: '', duration: 30, start: '09:00', location: '' });
+    const [f, setF] = useState({ name: '', description: '', duration: 30, start: '09:00', location: '', tier_id: '' });
+    const myTiers = useDmtTiers();
     useEffect(() => {
         if (template) setF({
             name: template.name, description: template.description || '',
             duration: template.default_duration_minutes, start: template.default_start_time?.slice(0, 5) || '09:00',
-            location: template.default_location || '',
+            location: template.default_location || '', tier_id: template.tier_id || '',
         });
-        else setF({ name: '', description: '', duration: 30, start: '09:00', location: '' });
+        else setF({ name: '', description: '', duration: 30, start: '09:00', location: '', tier_id: '' });
     }, [template, open]);
 
     const save = useMutation({
@@ -33,6 +39,7 @@ function TemplateForm({ open, onOpenChange, template, me, onSaved }) {
                 name: f.name, description: f.description || null,
                 default_duration_minutes: Number(f.duration),
                 default_start_time: f.start || null, default_location: f.location || null,
+                tier_id: f.tier_id || null,
             };
             if (template) { await dmtApi.update('meeting-templates', template.id, payload); return template.id; }
             const factory = await dmtApi.myFactory();
@@ -65,6 +72,17 @@ function TemplateForm({ open, onOpenChange, template, me, onSaved }) {
                         </div>
                     </div>
                     <Input placeholder="Default location (optional)" value={f.location} onChange={(e) => setF({ ...f, location: e.target.value })} className="h-11" />
+                    <div>
+                        <label className="text-sm font-medium text-slate-700">Tier (optional)</label>
+                        <Select value={f.tier_id || 'none'} onValueChange={(v) => setF({ ...f, tier_id: v === 'none' ? '' : v })}>
+                            <SelectTrigger className="mt-1 h-11"><SelectValue placeholder="No tier" /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="none">No tier</SelectItem>
+                                {(myTiers.data || []).map((t) => <SelectItem key={t.id} value={t.id}>{tierLabel(t)}</SelectItem>)}
+                            </SelectContent>
+                        </Select>
+                        <p className="mt-1 text-xs text-slate-400">Meetings created from this template inherit its tier — Decision Log visibility is scoped by it.</p>
+                    </div>
                 </div>
                 <DialogFooter>
                     <Button disabled={!f.name.trim() || save.isPending} onClick={() => save.mutate()}>
@@ -154,6 +172,8 @@ export function DmtMeetingTemplates() {
     const [editT, setEditT] = useState(null);
     const [inviteesId, setInviteesId] = useState(null);
     const [deleteId, setDeleteId] = useState(null);
+    const myTiers = useDmtTiers();
+    const tierById = Object.fromEntries((myTiers.data || []).map((t) => [t.id, t]));
 
     const templates = useQuery({
         queryKey: ['dmt', 'meeting-templates'],
@@ -194,6 +214,7 @@ export function DmtMeetingTemplates() {
                         <thead>
                             <tr className="border-b bg-slate-50 text-left text-sm text-slate-500">
                                 <th className="p-3 font-medium">Name</th>
+                                <th className="p-3 font-medium">Tier</th>
                                 <th className="p-3 font-medium">Duration</th>
                                 <th className="p-3 font-medium">Default Time</th>
                                 <th className="p-3 text-center font-medium">Invitees</th>
@@ -205,6 +226,7 @@ export function DmtMeetingTemplates() {
                             {templates.data.map((t) => (
                                 <tr key={t.id} className="border-b last:border-0">
                                     <td className="p-3 text-sm font-medium">{t.name}</td>
+                                    <td className="p-3 text-sm text-slate-500">{t.tier_id ? tierLabel(tierById[t.tier_id]) : '—'}</td>
                                     <td className="p-3 text-sm text-slate-500">{t.default_duration_minutes} min</td>
                                     <td className="p-3 text-sm text-slate-500">{t.default_start_time?.slice(0, 5) || '—'}</td>
                                     <td className="p-3 text-center text-sm">{counts.data?.[t.id] || 0}</td>

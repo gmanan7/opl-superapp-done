@@ -6,6 +6,8 @@ import { Button } from '../../components/ui/button';
 import { cn } from '../../lib/utils';
 import { dmtApi } from '../lib/dmtApi';
 import { useDmtDepartments } from '../lib/useDmtKpi';
+import { useDmtMe } from '../lib/useDmt';
+import { useMyTierKpis } from '../lib/useDmtTiers';
 import { KpiTrendChart } from '../components/KpiTrendChart';
 import { ComposedKpiChart } from '../components/ComposedKpiChart';
 import { PERIODS, getDateRange } from '../lib/kpiChart';
@@ -27,13 +29,23 @@ export function DmtKpiTrends() {
         queryFn: async () => (await dmtApi.list('kpi-master', { is_active: 'true' })).filter((k) => k.is_active && k.kpi_type === 'project_tracker'),
     });
     const trackerItems = useQuery({ queryKey: ['dmt', 'trends-tracker-items'], queryFn: () => dmtApi.list('project-tracker-items') });
-    const kpis = useQuery({
+    const { tierAtLeast } = useDmtMe();
+    const seesAll = tierAtLeast('be_lead');
+    const myTierKpis = useMyTierKpis();
+    const myKpiIds = useMemo(() => new Set((myTierKpis.data || []).map((k) => k.kpi_id)), [myTierKpis.data]);
+    const kpisAll = useQuery({
         queryKey: ['dmt', 'trends-kpis'],
         queryFn: async () => {
             const rows = await dmtApi.list('kpi-master', { is_active: 'true' });
             return rows.filter((k) => k.is_active && k.kpi_type !== 'project_tracker');
         },
     });
+    // Only KPIs owned by a group the person belongs to (BE Admin sees every KPI).
+    const kpis = useMemo(() => ({
+        ...kpisAll,
+        isLoading: kpisAll.isLoading || (!seesAll && myTierKpis.isLoading),
+        data: seesAll ? kpisAll.data : (kpisAll.data || []).filter((k) => myKpiIds.has(k.id)),
+    }), [kpisAll, seesAll, myTierKpis.isLoading, myKpiIds]);
     const entries = useQuery({
         queryKey: ['dmt', 'trends-entries', from, to],
         queryFn: () => dmtApi.list('kpi-entries'),
